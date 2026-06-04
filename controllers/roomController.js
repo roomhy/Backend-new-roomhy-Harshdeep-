@@ -292,6 +292,14 @@ exports.deleteRoom = async (req, res) => {
         if (!room) {
             return res.status(404).json({ success: false, message: "Room not found" });
         }
+
+        // Clean up tenant room assignments for this room
+        const Tenant = require('../models/Tenant');
+        await Tenant.updateMany(
+            { room: roomId },
+            { $set: { room: null, roomNo: '', bedNo: '' } }
+        );
+
         res.json({ success: true, message: "Room deleted successfully" });
     } catch (err) {
         console.error("Error deleting room:", err);

@@ -658,6 +658,22 @@ exports.login = async (req, res) => {
                 return res.status(403).json({ message: 'Account disabled' });
             }
 
+            // Check if tenant is inactive/deleted
+            if (user.role === 'tenant') {
+                const tenant = await Tenant.findOne({ loginId: user.loginId });
+                if (!tenant || tenant.status === 'inactive') {
+                    return res.status(403).json({ message: 'Account disabled/inactive' });
+                }
+            }
+
+            // Check if owner is inactive/deleted
+            if (user.role === 'owner') {
+                const owner = await Owner.findOne({ loginId: user.loginId });
+                if (!owner || owner.status === 'inactive') {
+                    return res.status(403).json({ message: 'Account disabled/inactive' });
+                }
+            }
+
             // Owners can login using loginId or phone (not email)
             if (user.role === 'owner' && isEmail) {
                 return res.status(403).json({ message: 'Owners must login using Owner ID or Phone Number' });

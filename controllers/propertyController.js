@@ -400,6 +400,30 @@ exports.deleteProperty = async (req, res) => {
             ]
         });
 
+        // 1. Delete all rooms belonging to this property
+        const Room = require('../models/Room');
+        await Room.deleteMany({ property: propId });
+
+        // 2. Mark all active/pending tenants in this property as checked out / inactive (Ex-Tenants)
+        const Tenant = require('../models/Tenant');
+        const User = require('../models/user');
+        
+        const propertyTenants = await Tenant.find({ property: propId });
+        for (const tenant of propertyTenants) {
+            // Delete user login credentials
+            if (tenant.user) {
+                await User.findByIdAndDelete(tenant.user);
+            }
+            if (tenant.loginId) {
+                await User.deleteOne({ loginId: tenant.loginId, role: 'tenant' });
+            }
+            
+            // Set status to inactive and clear active mongoose room ref
+            tenant.status = 'inactive';
+            tenant.room = undefined;
+            await tenant.save();
+        }
+
         await Property.findByIdAndDelete(propId);
 
         // Clear API cache to reflect changes immediately

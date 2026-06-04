@@ -47,8 +47,140 @@ router.post('/', protect, authorize('superadmin', 'areamanager', 'owner'), audit
 // 4. Update tenant
 router.patch('/:id', protect, authorize('superadmin', 'areamanager', 'owner'), auditTrail('tenants'), async (req, res) => {
     try {
-        const tenant = await Tenant.findByIdAndUpdate(req.params.id, req.body, { new: true });
+        const tenant = await Tenant.findById(req.params.id);
         if (!tenant) return res.status(404).json({ message: 'Tenant not found' });
+
+        // Sync to User credentials if basic info changes
+        if (req.body.name || req.body.phone || req.body.email) {
+            const User = require('../models/user');
+            const userUpdate = {};
+            if (req.body.name) userUpdate.name = req.body.name;
+            if (req.body.phone) userUpdate.phone = req.body.phone;
+            if (req.body.email) userUpdate.email = req.body.email;
+
+            if (tenant.user) {
+                await User.findByIdAndUpdate(tenant.user, userUpdate);
+            } else if (tenant.loginId) {
+                await User.findOneAndUpdate({ loginId: tenant.loginId }, userUpdate);
+            }
+        }
+
+        // Handle room and bed assignment updates
+        const roomNoChanged = req.body.roomNo !== undefined && req.body.roomNo !== tenant.roomNo;
+        const bedNoChanged = req.body.bedNo !== undefined && req.body.bedNo !== tenant.bedNo;
+
+        if (roomNoChanged || bedNoChanged) {
+            // Free the old bed assignment if it exists
+            if (tenant.room && tenant.bedNo) {
+                const oldRoom = await Room.findById(tenant.room);
+                if (oldRoom && oldRoom.bedAssignments) {
+                    const oldIndex = Number(tenant.bedNo) - 1;
+                    if (oldIndex >= 0 && oldRoom.bedAssignments[oldIndex] && String(oldRoom.bedAssignments[oldIndex].tenantId) === String(tenant._id)) {
+                        oldRoom.bedAssignments[oldIndex] = {};
+                        oldRoom.markModified('bedAssignments');
+                        await oldRoom.save();
+                    }
+                }
+            }
+
+            // Assign the new bed assignment
+            const targetRoomNo = req.body.roomNo !== undefined ? req.body.roomNo : tenant.roomNo;
+            const targetBedNo = req.body.bedNo !== undefined ? req.body.bedNo : tenant.bedNo;
+
+            let newRoomObj = null;
+            if (targetRoomNo) {
+                newRoomObj = await Room.findOne({
+                    property: tenant.property,
+                    title: { $regex: `^${String(targetRoomNo).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' }
+                });
+            }
+
+            if (newRoomObj) {
+                tenant.room = newRoomObj._id;
+                if (targetBedNo) {
+                    const bIndex = Number(targetBedNo) - 1;
+                    if (bIndex >= 0) {
+                        if (!newRoomObj.bedAssignments) {
+                            newRoomObj.bedAssignments = [];
+                        }
+                        while (newRoomObj.bedAssignments.length <= bIndex) {
+                            newRoomObj.bedAssignments.push({});
+                        }
+
+                        const occupant = newRoomObj.bedAssignments[bIndex];
+                        if (occupant && occupant.tenantId && String(occupant.tenantId) !== String(tenant._id)) {
+                            return res.status(400).json({ message: `Bed ${targetBedNo} in Room ${targetRoomNo} is already occupied.` });
+                        }
+
+                        newRoomObj.bedAssignments[bIndex] = {
+                            tenantId: tenant._id,
+                            tenantName: req.body.name || tenant.name,
+                            tenantLoginId: tenant.loginId,
+                            assignedAt: new Date()
+                        };
+                        newRoomObj.markModified('bedAssignments');
+                        await newRoomObj.save();
+                    }
+                }
+            } else if (targetRoomNo) {
+                tenant.room = undefined;
+            }
+        } else {
+            // Room and bed did not change, but maybe name changed
+            if (req.body.name && tenant.room && tenant.bedNo) {
+                const currentRoom = await Room.findById(tenant.room);
+                if (currentRoom && currentRoom.bedAssignments) {
+                    const bIndex = Number(tenant.bedNo) - 1;
+                    if (bIndex >= 0 && currentRoom.bedAssignments[bIndex] && String(currentRoom.bedAssignments[bIndex].tenantId) === String(tenant._id)) {
+                        currentRoom.bedAssignments[bIndex].tenantName = req.body.name;
+                        currentRoom.markModified('bedAssignments');
+                        await currentRoom.save();
+                    }
+                }
+            }
+        }
+
+        // Sync pending rent bills
+        if (tenant.loginId) {
+            const rentUpdate = {};
+            if (req.body.name) rentUpdate.tenantName = req.body.name;
+            if (req.body.phone) rentUpdate.tenantPhone = req.body.phone;
+            if (req.body.email) rentUpdate.tenantEmail = req.body.email;
+            if (req.body.roomNo !== undefined) rentUpdate.roomNumber = req.body.roomNo;
+            if (req.body.agreedRent !== undefined) {
+                rentUpdate.rentAmount = Number(req.body.agreedRent);
+                rentUpdate.totalDue = Number(req.body.agreedRent);
+            }
+
+            if (Object.keys(rentUpdate).length > 0) {
+                await Rent.updateMany({ tenantLoginId: tenant.loginId, paymentStatus: 'pending' }, { $set: rentUpdate });
+            }
+        }
+
+        // Apply updates
+        const allowedUpdates = [
+            'name', 'phone', 'email', 'dob', 'gender', 'guardianNumber',
+            'roomNo', 'bedNo', 'moveInDate', 'agreedRent', 'paymentFrequency',
+            'status', 'kycStatus'
+        ];
+
+        allowedUpdates.forEach(key => {
+            if (req.body[key] !== undefined) {
+                tenant[key] = req.body[key];
+            }
+        });
+
+        // Sync digitalCheckin profile
+        if (tenant.digitalCheckin && tenant.digitalCheckin.profile) {
+            if (req.body.name) tenant.digitalCheckin.profile.name = req.body.name;
+            if (req.body.phone) tenant.digitalCheckin.profile.phone = req.body.phone;
+            if (req.body.email) tenant.digitalCheckin.profile.email = req.body.email;
+            if (req.body.roomNo !== undefined) tenant.digitalCheckin.profile.roomNo = req.body.roomNo;
+            if (req.body.agreedRent !== undefined) tenant.digitalCheckin.profile.agreedRent = Number(req.body.agreedRent);
+            tenant.markModified('digitalCheckin');
+        }
+
+        await tenant.save();
         res.json(tenant);
     } catch (err) {
         res.status(400).json({ message: err.message });
@@ -61,11 +193,18 @@ router.delete('/:id', protect, authorize('superadmin', 'areamanager', 'owner'), 
         const tenant = await Tenant.findById(req.params.id);
         if (!tenant) return res.status(404).json({ message: 'Tenant not found' });
         
-        // Remove tenant references from rooms' bedAssignments
-        await Room.updateMany(
-            { 'bedAssignments.tenantId': req.params.id },
-            { $pull: { bedAssignments: { tenantId: req.params.id } } }
-        );
+        // Free tenant references from rooms' bedAssignments preserving indexes
+        const roomsToUpdate = await Room.find({ 'bedAssignments.tenantId': req.params.id });
+        for (const room of roomsToUpdate) {
+            room.bedAssignments = room.bedAssignments.map(assignment => {
+                if (assignment.tenantId && assignment.tenantId.toString() === req.params.id) {
+                    return {}; // free assignment
+                }
+                return assignment;
+            });
+            room.markModified('bedAssignments');
+            await room.save();
+        }
 
         // Delete corresponding login credentials from User collection
         const User = require('../models/user');
@@ -76,7 +215,10 @@ router.delete('/:id', protect, authorize('superadmin', 'areamanager', 'owner'), 
             await User.deleteOne({ loginId: tenant.loginId, role: 'tenant' });
         }
 
-        await Tenant.findByIdAndDelete(req.params.id);
+        // Instead of hard-deleting the tenant, soft-delete them to 'inactive' status (Ex-Tenant)
+        tenant.status = 'inactive';
+        tenant.room = undefined; // clear Mongoose room ref
+        await tenant.save();
         res.json({ message: 'Tenant deleted' });
     } catch (err) {
         res.status(500).json({ message: err.message });
