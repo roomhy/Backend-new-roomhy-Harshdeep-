@@ -109,7 +109,7 @@ exports.addProperty = async (req, res) => {
     }
 
     // If added by owner, it should be pending approval. Otherwise, auto-active for superadmin.
-    if (propertyData.ownerLoginId) {
+    if (propertyData.ownerLoginId && propertyData.status !== 'active') {
         propertyData.status = 'pending_approval';
         propertyData.isPublished = false;
         propertyData.isLiveOnWebsite = false;
@@ -210,13 +210,14 @@ exports.updateProperty = async (req, res) => {
       }
     }
     
-    const property = await Property.findByIdAndUpdate(
-      propId,
-      updateData,
-      { new: true, runValidators: true }
-    ).populate('owner', 'name phone email');
-    
+    let property = await Property.findById(propId);
     if (!property) return res.status(404).json({ success: false, message: 'Property not found' });
+
+    Object.assign(property, updateData);
+    await property.save();
+
+    // Re-fetch to populate owner details cleanly
+    property = await Property.findById(propId).populate('owner', 'name phone email');
 
     // Sync with ApprovedProperty
     await syncToApprovedProperty(property);

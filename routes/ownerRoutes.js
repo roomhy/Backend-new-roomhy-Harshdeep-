@@ -159,8 +159,19 @@ router.patch('/:loginId', auditTrail('owners'), async (req, res) => {
 router.get('/:loginId/rooms', async (req, res) => {
     try {
         const loginId = String(req.params.loginId || '').trim().toUpperCase();
+        await ownerController.healOwnerProperties(loginId);
         // Find properties owned by this owner
         const properties = await Property.find({ ownerLoginId: loginId, isDeleted: { $ne: true } }).select('_id title');
+        
+        // Sync property occupancy (this auto-generates rooms from roomTypes if they don't exist yet)
+        for (const prop of properties) {
+            try {
+                await ownerController.syncPropertyOccupancyData(prop._id);
+            } catch (syncErr) {
+                console.error(`❌ Error syncing occupancy during rooms fetch for property ${prop._id}:`, syncErr.message);
+            }
+        }
+
         const propertyIds = properties.map(p => p._id);
 
         // Find rooms that belong to those properties
@@ -177,8 +188,26 @@ router.get('/:loginId/rooms', async (req, res) => {
 router.get('/:loginId/properties', async (req, res) => {
     try {
         const loginId = String(req.params.loginId || '').trim().toUpperCase();
+        await ownerController.healOwnerProperties(loginId);
         const properties = await Property.find({ ownerLoginId: loginId, isDeleted: { $ne: true } });
-        return res.json({ properties });
+        
+        const syncedProperties = [];
+        for (const prop of properties) {
+            const occupancy = await ownerController.syncPropertyOccupancyData(prop._id);
+            if (occupancy) {
+                const propObj = prop.toObject ? prop.toObject() : prop;
+                propObj.roomCount = occupancy.totalRooms;
+                propObj.bedCount = occupancy.totalBeds;
+                propObj.occupiedBeds = occupancy.occupiedBeds;
+                propObj.occupiedRooms = occupancy.occupiedRooms;
+                propObj.vacantRooms = occupancy.vacantRooms;
+                propObj.vacantBeds = occupancy.vacantBeds;
+                syncedProperties.push(propObj);
+            } else {
+                syncedProperties.push(prop);
+            }
+        }
+        return res.json({ properties: syncedProperties });
     } catch (err) {
         console.error('❌ Error fetching owner properties:', err.message);
         return res.status(500).json({ error: err.message });
@@ -226,6 +255,7 @@ router.post('/:loginId/properties', auditTrail('owners'), async (req, res) => {
 router.get('/:loginId/rent', async (req, res) => {
     try {
         const loginId = String(req.params.loginId || '').trim().toUpperCase();
+        await ownerController.healOwnerProperties(loginId);
         // Find properties owned by this owner
         const properties = await Property.find({ ownerLoginId: loginId, isDeleted: { $ne: true } }).select('_id');
         const propertyIds = properties.map(p => p._id);
@@ -247,6 +277,7 @@ router.get('/:loginId/rent', async (req, res) => {
 router.get('/:loginId/tenants', async (req, res) => {
     try {
         const loginId = String(req.params.loginId || '').trim().toUpperCase();
+        await ownerController.healOwnerProperties(loginId);
         const properties = await Property.find({ ownerLoginId: loginId, isDeleted: { $ne: true } }).select('_id');
         const propertyIds = properties.map((p) => p._id);
         const tenants = await require('../models/Tenant').find({ property: { $in: propertyIds }, isDeleted: { $ne: true } });

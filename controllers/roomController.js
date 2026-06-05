@@ -103,7 +103,15 @@ exports.getRoomsByProperty = async (req, res) => {
           return res.status(400).json({ message: "Invalid Property ID format" });
         }
         
-        let rooms = await Room.find({ property: new mongoose.Types.ObjectId(propertyId) }).lean();
+        // Sync property occupancy (which auto-generates rooms from roomTypes if they don't exist yet)
+        try {
+            const ownerController = require('./ownercontroller');
+            await ownerController.syncPropertyOccupancyData(propertyId);
+        } catch (syncErr) {
+            console.error(`❌ Error syncing occupancy during getRoomsByProperty for property ${propertyId}:`, syncErr.message);
+        }
+
+        let rooms = await Room.find({ property: new mongoose.Types.ObjectId(propertyId), isDeleted: { $ne: true } }).lean();
 
         if (unassigned === 'true') {
             const Tenant = require('../models/Tenant');
@@ -234,9 +242,25 @@ exports.getElectricityReadings = async (req, res) => {
 exports.getRoomsByOwner = async (req, res) => {
     try {
         const { ownerLoginId } = req.params;
-        const properties = await Property.find({ ownerLoginId }).lean();
+        const normalizedOwnerId = String(ownerLoginId || '').trim().toUpperCase();
+
+        // Dynamically import ownerController to prevent circular dependency issues
+        const ownerController = require('./ownercontroller');
+        await ownerController.healOwnerProperties(normalizedOwnerId);
+
+        const properties = await Property.find({ ownerLoginId: normalizedOwnerId, isDeleted: { $ne: true } }).lean();
+        
+        // Sync property occupancy (this auto-generates rooms from roomTypes if they don't exist yet)
+        for (const prop of properties) {
+            try {
+                await ownerController.syncPropertyOccupancyData(prop._id);
+            } catch (syncErr) {
+                console.error(`❌ Error syncing occupancy during getRoomsByOwner for property ${prop._id}:`, syncErr.message);
+            }
+        }
+
         const propertyIds = properties.map(p => p._id);
-        const rooms = await Room.find({ property: { $in: propertyIds } }).populate('property', 'title').lean();
+        const rooms = await Room.find({ property: { $in: propertyIds }, isDeleted: { $ne: true } }).populate('property', 'title').lean();
         res.json({ success: true, rooms });
     } catch (err) {
         console.error("Error getting rooms by owner:", err);

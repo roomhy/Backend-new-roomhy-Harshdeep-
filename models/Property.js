@@ -11,7 +11,7 @@ const PropertySchema = new mongoose.Schema({
   ownerLoginId: { type: String },
   ownerName: { type: String },
   ownerPhone: { type: String },
-  status: { type: String, enum: ['inactive','active','blocked'], default: 'inactive' },
+  status: { type: String, enum: ['inactive','active','blocked','pending_approval'], default: 'inactive' },
   isPublished: { type: Boolean, default: false },
   isLiveOnWebsite: { type: Boolean, default: false },
   visitId: { type: String, index: true },
@@ -157,9 +157,73 @@ const PropertySchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 });
 
-// Auto-update updatedAt on save
-PropertySchema.pre('save', function(next) {
+// Auto-update updatedAt on save and resolve/link Owner details
+PropertySchema.pre('save', async function(next) {
   this.updatedAt = new Date();
+  
+  try {
+    // If owner is already fully resolved (has owner ObjectId and ownerLoginId), and ownerLoginId has not been modified, skip
+    if (this.owner && this.ownerLoginId && !this.isModified('ownerLoginId')) {
+      return next();
+    }
+    
+    const OwnerModel = mongoose.models.Owner || require('./Owner');
+    const UserModel = mongoose.models.User || require('./user');
+    
+    let ownerDoc = null;
+    
+    // 1. Match by ownerLoginId
+    const loginId = String(this.ownerLoginId || '').trim().toUpperCase();
+    if (loginId) {
+        ownerDoc = await OwnerModel.findOne({ loginId });
+    }
+    
+    // 2. Match by contact email or top-level email
+    if (!ownerDoc) {
+        const email = String(this.contact?.email || this.email || '').trim().toLowerCase();
+        if (email) {
+            ownerDoc = await OwnerModel.findOne({
+                $or: [
+                    { email: email },
+                    { 'profile.email': email }
+                ]
+            });
+        }
+    }
+    
+    // 3. Match by contact number or ownerPhone
+    if (!ownerDoc) {
+        const phone = String(this.contact?.number || this.ownerPhone || this.phone || '').trim();
+        if (phone) {
+            const cleanPhone = phone.replace(/^\+?91/, '').trim();
+            if (cleanPhone.length >= 10) {
+                ownerDoc = await OwnerModel.findOne({
+                    $or: [
+                        { phone: new RegExp(cleanPhone + '$') },
+                        { 'profile.phone': new RegExp(cleanPhone + '$') },
+                        { checkinPhone: new RegExp(cleanPhone + '$') }
+                    ]
+                });
+            }
+        }
+    }
+    
+    // If found, populate the owner details in the property
+    if (ownerDoc) {
+        this.ownerLoginId = ownerDoc.loginId;
+        if (!this.ownerName) this.ownerName = ownerDoc.name || ownerDoc.profile?.name;
+        if (!this.ownerPhone) this.ownerPhone = ownerDoc.phone || ownerDoc.profile?.phone;
+        
+        // Find corresponding user ObjectId
+        const userDoc = await UserModel.findOne({ loginId: ownerDoc.loginId, role: 'owner' });
+        if (userDoc) {
+            this.owner = userDoc._id;
+        }
+    }
+  } catch (err) {
+    console.error('Error in Property pre-save owner resolution:', err);
+  }
+  
   next();
 });
 

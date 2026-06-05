@@ -1,9 +1,256 @@
+// Auto-healer function to match and link previously unlinked properties to owners on-the-fly
+exports.healOwnerProperties = async (loginId) => {
+    try {
+        const normalizedLoginId = String(loginId || '').trim().toUpperCase();
+        if (!normalizedLoginId) return;
+
+        const mongoose = require('mongoose');
+        const Owner = mongoose.models.Owner || require('../models/Owner');
+        const Property = mongoose.models.Property || require('../models/Property');
+        const User = mongoose.models.User || require('../models/user');
+
+        const ownerDoc = await Owner.findOne({ loginId: normalizedLoginId });
+        if (!ownerDoc) return;
+
+        // Collect all possible emails and phones of the owner
+        const emails = [
+            ownerDoc.email,
+            ownerDoc.profile?.email,
+            ownerDoc.checkinEmail
+        ].map(e => String(e || '').trim().toLowerCase()).filter(Boolean);
+
+        const phones = [
+            ownerDoc.phone,
+            ownerDoc.profile?.phone,
+            ownerDoc.checkinPhone
+        ].map(p => {
+            const clean = String(p || '').replace(/\D/g, '');
+            return clean.length >= 10 ? clean.slice(-10) : '';
+        }).filter(Boolean);
+
+        if (emails.length === 0 && phones.length === 0) return;
+
+        const matchConditions = [];
+        if (emails.length > 0) {
+            matchConditions.push({ 'contact.email': { $in: emails } });
+            matchConditions.push({ 'email': { $in: emails } });
+        }
+        if (phones.length > 0) {
+            phones.forEach(p => {
+                matchConditions.push({ 'contact.number': new RegExp(p + '$') });
+                matchConditions.push({ 'ownerPhone': new RegExp(p + '$') });
+                matchConditions.push({ 'phone': new RegExp(p + '$') });
+            });
+        }
+
+        if (matchConditions.length === 0) return;
+
+        const finalQuery = {
+            $and: [
+                {
+                    $or: [
+                        { ownerLoginId: { $exists: false } },
+                        { ownerLoginId: null },
+                        { ownerLoginId: "" },
+                        { ownerLoginId: "TEMP" },
+                        { ownerLoginId: "GEN" }
+                    ]
+                },
+                { isDeleted: { $ne: true } },
+                { $or: matchConditions }
+            ]
+        };
+
+        const unmatchedProperties = await Property.find(finalQuery);
+        if (unmatchedProperties.length === 0) return;
+
+        console.log(`🧹 Auto-Healer: Found ${unmatchedProperties.length} unmatched properties matching owner ${normalizedLoginId}. Healing now...`);
+
+        const userDoc = await User.findOne({ loginId: normalizedLoginId, role: 'owner' });
+        const ownerUserId = userDoc ? userDoc._id : null;
+
+        for (const prop of unmatchedProperties) {
+            prop.ownerLoginId = normalizedLoginId;
+            if (ownerUserId) {
+                prop.owner = ownerUserId;
+            }
+            if (!prop.ownerName) {
+                prop.ownerName = ownerDoc.name || ownerDoc.profile?.name;
+            }
+            if (!prop.ownerPhone) {
+                prop.ownerPhone = ownerDoc.phone || ownerDoc.profile?.phone;
+            }
+            await prop.save();
+            console.log(`   ✓ Linked property "${prop.title}" to owner ${normalizedLoginId}`);
+        }
+    } catch (err) {
+        console.error('❌ Error running auto-healer in healOwnerProperties:', err);
+    }
+};
+
+// Sync occupancy counts for a property based on Rooms, Tenants, and roomTypes fallback
+exports.syncPropertyOccupancyData = async (propertyId) => {
+    try {
+        const mongoose = require('mongoose');
+        const Room = mongoose.models.Room || require('../models/Room');
+        const Tenant = mongoose.models.Tenant || require('../models/Tenant');
+        const Property = mongoose.models.Property || require('../models/Property');
+        const ApprovedProperty = mongoose.models.ApprovedProperty || require('../models/ApprovedProperty');
+
+        const property = await Property.findById(propertyId);
+        if (!property) return null;
+
+        // 1. Get rooms count and total beds from Room collection
+        let rooms = await Room.find({ property: propertyId, isDeleted: { $ne: true } }).lean();
+        
+        // Auto-generate rooms if none exist in the database for this property
+        if (rooms.length === 0 && property.roomTypes && property.roomTypes.length > 0) {
+            console.log(`🏠 Auto-Generating rooms for property "${property.title}" from roomTypes...`);
+            let roomIndex = 1;
+            const newRooms = [];
+            for (const rt of property.roomTypes) {
+                const numRooms = parseInt(rt.totalRooms || 0, 10);
+                const occupancy = parseInt(rt.occupancy || 1, 10);
+                const price = Number(rt.pricePerBed || rt.pricePerRoom || 0);
+                
+                for (let i = 0; i < numRooms; i++) {
+                    const title = String(100 + roomIndex);
+                    newRooms.push({
+                        property: propertyId,
+                        title,
+                        type: rt.type || 'AC',
+                        beds: occupancy,
+                        price,
+                        sharingType: rt.type || '',
+                        status: 'active', // Mark active so it is visible and usable
+                        isAvailable: true,
+                        createdBy: property.owner || null
+                    });
+                    roomIndex++;
+                }
+            }
+            if (newRooms.length > 0) {
+                await Room.insertMany(newRooms);
+                // Re-fetch the newly generated rooms
+                rooms = await Room.find({ property: propertyId, isDeleted: { $ne: true } }).lean();
+                console.log(`✅ Successfully generated ${rooms.length} rooms for property "${property.title}"`);
+            }
+        }
+        
+        let totalRooms = 0;
+        let totalBeds = 0;
+
+        if (rooms.length > 0) {
+            totalRooms = rooms.length;
+            rooms.forEach(r => {
+                totalBeds += Number(r.beds || r.capacity || 1);
+            });
+        } else if (property.roomTypes && property.roomTypes.length > 0) {
+            // Fallback to roomTypes from Wizard
+            property.roomTypes.forEach(rt => {
+                totalRooms += parseInt(rt.totalRooms || 0, 10);
+                totalBeds += parseInt(rt.totalBeds || 0, 10);
+            });
+        }
+
+        // 2. Get active/pending tenants count from Tenant collection
+        const tenants = await Tenant.find({ 
+            property: propertyId, 
+            status: { $in: ['active', 'pending'] },
+            isDeleted: { $ne: true }
+        }).lean();
+
+        const occupiedBeds = tenants.length;
+
+        // Calculate occupied rooms by checking unique rooms of active tenants
+        const occupiedRoomIds = new Set();
+        const occupiedRoomNos = new Set();
+        tenants.forEach(t => {
+            if (t.room) {
+                occupiedRoomIds.add(t.room.toString());
+            }
+            if (t.roomNo) {
+                occupiedRoomNos.add(String(t.roomNo).trim().toLowerCase());
+            }
+        });
+        const occupiedRooms = Math.max(occupiedRoomIds.size, occupiedRoomNos.size);
+
+        const vacantRooms = Math.max(0, totalRooms - occupiedRooms);
+        const vacantBeds = Math.max(0, totalBeds - occupiedBeds);
+
+        // 3. Update Property document
+        await Property.updateOne(
+            { _id: propertyId },
+            { 
+                $set: {
+                    roomCount: totalRooms,
+                    bedCount: totalBeds,
+                    totalRooms,
+                    occupiedBeds,
+                    occupiedRooms,
+                    vacantRooms,
+                    vacantBeds
+                }
+            }
+        );
+
+        // Sync to ApprovedProperty (website) if exists
+        const approved = await ApprovedProperty.findOne({
+            $or: [
+                { propertyId: propertyId.toString() },
+                { visitId: property.visitId || propertyId.toString() }
+            ]
+        });
+
+        if (approved) {
+            approved.propertyInfo = approved.propertyInfo || {};
+            approved.propertyInfo.roomCount = totalRooms;
+            approved.propertyInfo.bedCount = totalBeds;
+            approved.propertyInfo.vacantRooms = vacantRooms;
+            approved.propertyInfo.vacantBeds = vacantBeds;
+            approved.propertyInfo.occupiedRooms = occupiedRooms;
+            approved.propertyInfo.occupiedBeds = occupiedBeds;
+            await approved.save();
+        }
+
+        return {
+            totalRooms,
+            totalBeds,
+            occupiedBeds,
+            occupiedRooms,
+            vacantRooms,
+            vacantBeds
+        };
+    } catch (err) {
+        console.error(`❌ Error syncing occupancy for property ${propertyId}:`, err.message);
+        return null;
+    }
+};
+
 // Get properties for an owner
 exports.getOwnerProperties = async (req, res) => {
     try {
         const ownerLoginId = req.params.loginId;
-        const properties = await Property.find({ ownerLoginId, isDeleted: { $ne: true } }).lean();
-        res.json({ properties });
+        await exports.healOwnerProperties(ownerLoginId);
+        const properties = await Property.find({ ownerLoginId, isDeleted: { $ne: true } });
+        
+        const syncedProperties = [];
+        for (const prop of properties) {
+            const occupancy = await exports.syncPropertyOccupancyData(prop._id);
+            if (occupancy) {
+                const propObj = prop.toObject ? prop.toObject() : prop;
+                propObj.roomCount = occupancy.totalRooms;
+                propObj.bedCount = occupancy.totalBeds;
+                propObj.occupiedBeds = occupancy.occupiedBeds;
+                propObj.occupiedRooms = occupancy.occupiedRooms;
+                propObj.vacantRooms = occupancy.vacantRooms;
+                propObj.vacantBeds = occupancy.vacantBeds;
+                syncedProperties.push(propObj);
+            } else {
+                syncedProperties.push(prop);
+            }
+        }
+        res.json({ properties: syncedProperties });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -13,7 +260,18 @@ exports.getOwnerProperties = async (req, res) => {
 exports.getOwnerRooms = async (req, res) => {
     try {
         const ownerLoginId = req.params.loginId;
+        await exports.healOwnerProperties(ownerLoginId);
         const properties = await Property.find({ ownerLoginId, isDeleted: { $ne: true } }).lean();
+        
+        // Sync property occupancy (this auto-generates rooms from roomTypes if they don't exist yet)
+        for (const prop of properties) {
+            try {
+                await exports.syncPropertyOccupancyData(prop._id);
+            } catch (syncErr) {
+                console.error(`❌ Error syncing occupancy during getOwnerRooms for property ${prop._id}:`, syncErr.message);
+            }
+        }
+
         const propertyIds = properties.map(p => p._id);
         const rooms = await require('../models/Room').find({ property: { $in: propertyIds }, isDeleted: { $ne: true } }).lean();
         res.json({ rooms });
@@ -26,6 +284,7 @@ exports.getOwnerRooms = async (req, res) => {
 exports.getOwnerTenants = async (req, res) => {
     try {
         const ownerLoginId = req.params.loginId;
+        await exports.healOwnerProperties(ownerLoginId);
         const properties = await Property.find({ ownerLoginId, isDeleted: { $ne: true } }).lean();
         const propertyIds = properties.map(p => p._id);
         const tenants = await require('../models/Tenant').find({ property: { $in: propertyIds }, isDeleted: { $ne: true } }).lean();
