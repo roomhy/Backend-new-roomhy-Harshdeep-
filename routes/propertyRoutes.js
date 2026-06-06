@@ -192,4 +192,13 @@ router.post('/:id/click', async (req, res) => {
   }
 });
 
+// Owner submits edit request (saved as pendingChanges, not applied live)
+router.put('/:id/owner-edit-request', formLimiter, propertyController.ownerEditRequest);
+
+// Superadmin approves owner pending changes (applies to live property)
+router.put('/:id/approve-changes', formLimiter, auditTrail('properties'), propertyController.approveOwnerChanges);
+
+// Superadmin rejects owner pending changes
+router.put('/:id/reject-changes', formLimiter, auditTrail('properties'), propertyController.rejectOwnerChanges);
+
 module.exports = router;

@@ -245,6 +245,162 @@ exports.updateProperty = async (req, res) => {
   }
 };
 
+// =====================================================================
+// OWNER EDIT REQUEST — saves changes as pendingChanges (no live update)
+// =====================================================================
+exports.ownerEditRequest = async (req, res) => {
+  try {
+    const propId = req.params.id;
+    const { updatedData, reason, ownerLoginId } = req.body;
+
+    const property = await Property.findById(propId);
+    if (!property) return res.status(404).json({ success: false, message: 'Property not found' });
+
+    // Save changes in pendingChanges — DO NOT update live fields
+    property.pendingChanges = {
+      data: updatedData || {},
+      requestedAt: new Date(),
+      requestedBy: ownerLoginId || property.ownerLoginId || 'Unknown',
+      reason: reason || '',
+      status: 'pending'
+    };
+    await property.save();
+
+    // Also send notification to superadmin
+    try {
+      const notification = new Notification({
+        to: 'SUPERADMIN',
+        from: ownerLoginId || property.ownerLoginId || 'Owner',
+        type: 'owner_edit_request',
+        title: '✏️ Property Edit Request',
+        message: `Owner ${ownerLoginId || property.ownerLoginId} has requested changes to "${property.title}". Reason: ${reason || 'Not specified'}`,
+        data: {
+          propertyId: property._id,
+          propertyName: property.title,
+          ownerLoginId: ownerLoginId || property.ownerLoginId,
+          reason
+        },
+        read: false,
+        createdAt: new Date()
+      });
+      await notification.save();
+    } catch (notifErr) {
+      console.warn('Notification save failed (non-critical):', notifErr.message);
+    }
+
+    res.json({
+      success: true,
+      message: 'Edit request submitted successfully. Awaiting admin approval.',
+      pendingChanges: property.pendingChanges
+    });
+  } catch (err) {
+    console.error('Owner Edit Request Error:', err);
+    res.status(500).json({ success: false, message: 'Failed to submit edit request', error: err.message });
+  }
+};
+
+// =====================================================================
+// APPROVE OWNER CHANGES — apply pendingChanges to live property
+// =====================================================================
+exports.approveOwnerChanges = async (req, res) => {
+  try {
+    const propId = req.params.id;
+    const property = await Property.findById(propId);
+    if (!property) return res.status(404).json({ success: false, message: 'Property not found' });
+    if (!property.pendingChanges || property.pendingChanges.status !== 'pending') {
+      return res.status(400).json({ success: false, message: 'No pending changes found' });
+    }
+
+    const changes = property.pendingChanges.data || {};
+
+    // Apply safe fields only (exclude critical admin-only fields)
+    const allowedFields = [
+      'title', 'description', 'address', 'city', 'locality', 'landmark',
+      'latitude', 'longitude', 'monthlyRent', 'discount', 'gender',
+      'propertyType', 'images', 'propertyViews', 'amenities', 'facilities',
+      'propertyDetails', 'pricing', 'policies', 'tenantDescription', 'roomTypes',
+      'contact', 'videoUrl'
+    ];
+    allowedFields.forEach(field => {
+      if (changes[field] !== undefined) {
+        property[field] = changes[field];
+      }
+    });
+
+    property.pendingChanges.status = 'approved';
+    property.updatedAt = new Date();
+    await property.save();
+
+    // Re-sync with website if live
+    await syncToApprovedProperty(property);
+    clearCache('/api/approved-properties');
+    clearCache('/api/properties');
+
+    // Notify owner
+    try {
+      const notification = new Notification({
+        to: property.ownerLoginId,
+        from: 'SUPERADMIN',
+        type: 'edit_approved',
+        title: '✅ Edit Request Approved',
+        message: `Your edit request for "${property.title}" has been approved and is now live.`,
+        data: { propertyId: property._id },
+        read: false,
+        createdAt: new Date()
+      });
+      await notification.save();
+    } catch (notifErr) {
+      console.warn('Notification save failed (non-critical):', notifErr.message);
+    }
+
+    res.json({ success: true, message: 'Changes approved and applied successfully', property });
+  } catch (err) {
+    console.error('Approve Changes Error:', err);
+    res.status(500).json({ success: false, message: 'Failed to approve changes', error: err.message });
+  }
+};
+
+// =====================================================================
+// REJECT OWNER CHANGES — discard pendingChanges
+// =====================================================================
+exports.rejectOwnerChanges = async (req, res) => {
+  try {
+    const propId = req.params.id;
+    const { rejectReason } = req.body;
+    const property = await Property.findById(propId);
+    if (!property) return res.status(404).json({ success: false, message: 'Property not found' });
+    if (!property.pendingChanges || property.pendingChanges.status !== 'pending') {
+      return res.status(400).json({ success: false, message: 'No pending changes found' });
+    }
+
+    property.pendingChanges.status = 'rejected';
+    property.pendingChanges.reason = rejectReason || property.pendingChanges.reason;
+    await property.save();
+
+    // Notify owner of rejection
+    try {
+      const notification = new Notification({
+        to: property.ownerLoginId,
+        from: 'SUPERADMIN',
+        type: 'edit_rejected',
+        title: '❌ Edit Request Rejected',
+        message: `Your edit request for "${property.title}" was rejected. ${rejectReason ? 'Reason: ' + rejectReason : ''}`,
+        data: { propertyId: property._id, rejectReason },
+        read: false,
+        createdAt: new Date()
+      });
+      await notification.save();
+    } catch (notifErr) {
+      console.warn('Notification save failed (non-critical):', notifErr.message);
+    }
+
+    res.json({ success: true, message: 'Changes rejected successfully' });
+  } catch (err) {
+    console.error('Reject Changes Error:', err);
+    res.status(500).json({ success: false, message: 'Failed to reject changes', error: err.message });
+  }
+};
+
 // Publish property (Super Admin action)
 exports.publishProperty = async (req, res) => {
     try {

@@ -152,7 +152,16 @@ const PropertySchema = new mongoose.Schema({
   views: { type: Number, default: 0 },
   clicks: { type: Number, default: 0 },
   isDeleted: { type: Boolean, default: false },
-  
+
+  // Owner Edit Requests — pending admin approval before going live
+  pendingChanges: {
+    data: { type: Object, default: null },
+    requestedAt: { type: Date, default: null },
+    requestedBy: { type: String, default: null },   // owner loginId
+    reason: { type: String, default: null },
+    status: { type: String, enum: ['pending', 'approved', 'rejected', null], default: null }
+  },
+
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

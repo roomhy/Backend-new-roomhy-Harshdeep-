@@ -311,10 +311,15 @@ const Property = require('../models/Property');
 const CheckinRecord = require('../models/CheckinRecord');
 const ApprovedProperty = require('../models/ApprovedProperty');
 
-// List Owners with Filtering (Area, KYC Status)
+// List Owners with Filtering (Area, KYC Status) + Pagination
 exports.getAllOwners = async (req, res) => {
     try {
-        const { locationCode, kycStatus, search } = req.query;
+        const { locationCode, kycStatus, search, page = 1, limit } = req.query;
+
+        // Smart default: small limit when searching (dropdown), larger for full table
+        const pageSize = Math.min(parseInt(limit) || (search ? 10 : 50), 200);
+        const skip = (Math.max(parseInt(page) || 1, 1) - 1) * pageSize;
+
         let query = { isDeleted: { $ne: true } };
 
         // Area Based Filtering
@@ -330,17 +335,22 @@ exports.getAllOwners = async (req, res) => {
             query['kyc.status'] = kycStatus;
         }
 
-        // Search
+        // Search — overrides locationCode $or if both provided (last write wins in MongoDB)
         if (search) {
             query.$or = [
                 { name: { $regex: search, $options: 'i' } },
                 { loginId: { $regex: search, $options: 'i' } },
                 { phone: { $regex: search, $options: 'i' } },
+                { email: { $regex: search, $options: 'i' } },
                 { 'profile.name': { $regex: search, $options: 'i' } }
             ];
         }
 
-        const owners = await Owner.find(query).sort({ createdAt: -1 }).lean();
+        // Run count & data query in parallel
+        const [total, owners] = await Promise.all([
+            Owner.countDocuments(query),
+            Owner.find(query).sort({ createdAt: -1 }).skip(skip).limit(pageSize).lean()
+        ]);
 
         // Attach property counts per owner for frontend display
         const ownerLoginIds = owners.map(o => o.loginId).filter(Boolean);
@@ -382,7 +392,7 @@ exports.getAllOwners = async (req, res) => {
             owners.forEach(o => { o.propertyCount = 0; });
         }
 
-        // ✅ NEW: Ensure all owners have merged profile data at top level for easy frontend access
+        // ✅ Ensure all owners have merged profile data at top level for easy frontend access
         const checkins = ownerLoginIds.length > 0
             ? await CheckinRecord.find({ role: 'owner', loginId: { $in: ownerLoginIds } }).lean()
             : [];
@@ -439,12 +449,24 @@ exports.getAllOwners = async (req, res) => {
             city: o.profile?.city || o.city || primaryPropertyMap[o.loginId]?.city || ''
         }));
 
-        res.json({ success: true, owners: enrichedOwners });
+        res.json({
+            success: true,
+            owners: enrichedOwners,
+            pagination: {
+                total,
+                page: parseInt(page) || 1,
+                limit: pageSize,
+                totalPages: Math.ceil(total / pageSize),
+                hasNext: skip + owners.length < total,
+                hasPrev: (parseInt(page) || 1) > 1
+            }
+        });
     } catch (err) {
         console.error('Get Owners Error:', err);
         res.status(500).json({ success: false, message: 'Server error' });
     }
 };
+
 
 // Update Owner KYC Status (Super Admin Action)
 exports.updateOwnerKyc = async (req, res) => {
