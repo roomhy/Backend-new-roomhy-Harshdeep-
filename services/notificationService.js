@@ -3,16 +3,31 @@ const NotificationLog = require('../models/NotificationLog');
 const RentAuditLog    = require('../models/RentAuditLog');
 const globalConfig    = require('../config/rentCollectionConfig');
 
-let sendMail, sendWhatsAppTemplate, getMailerConfig, isWhatsAppConfigured, normalizePhoneNumber;
+let sendMail, sendWhatsAppTemplate, sendWhatsAppMessage, getMailerConfig, isWhatsAppConfigured, normalizePhoneNumber;
 try {
   const mailer            = require('../utils/mailer');
   sendMail                = mailer.sendMail;
   sendWhatsAppTemplate    = mailer.sendWhatsAppTemplate;
+  sendWhatsAppMessage     = mailer.sendWhatsAppMessage;
   getMailerConfig         = mailer.getMailerConfig;
   isWhatsAppConfigured    = mailer.isWhatsAppConfigured;
   normalizePhoneNumber    = mailer.normalizePhoneNumber;
 } catch (_) {
   sendMail = null;
+}
+
+function buildPaymentDetailsWA(p) {
+  const lines = [];
+  if (p.ownerUpiId)         lines.push(`📱 *UPI ID:* ${p.ownerUpiId}`);
+  if (p.ownerAccountNumber) {
+    lines.push(`🏦 *Bank Transfer:*`);
+    if (p.ownerBankName)      lines.push(`   Bank: ${p.ownerBankName}`);
+    if (p.ownerAccountHolder) lines.push(`   A/c Holder: ${p.ownerAccountHolder}`);
+    lines.push(`   A/c No: ${p.ownerAccountNumber}`);
+    if (p.ownerIfscCode)      lines.push(`   IFSC: ${p.ownerIfscCode}`);
+  }
+  if (!lines.length) return '';
+  return `💳 *Complete Your Payment*\n\n${lines.join('\n')}\n\nPlease confirm once payment is done 🙏`;
 }
 
 // ─── Queue a notification (dedup via unique index) ────────────────────────────
@@ -162,44 +177,25 @@ async function sendWhatsappNotification(log) {
   if (!phone) throw new Error('Tenant phone number missing or invalid');
 
   const phase = log.phase || 1;
-  // Phase 1 was created with 'en'; Phase 2 & 3 with 'en_US' — must match exactly
-  const langCode = phase === 1 ? 'en' : 'en_US';
-  let templateName, params;
+  // All phases use the single approved template; amount escalates with phase
+  const amount = phase === 1
+    ? String(p.rentAmount || 0)
+    : String(p.totalDue   || 0); // rent + electricity + penalty for phase 2/3
+  const params = [
+    { name: 'tenant_name',   value: p.tenantName            || 'Tenant' },
+    { name: 'property_name', value: p.billingMonthFormatted || p.billingMonth || 'this month' },
+    { name: 'due_date',      value: p.dueDate               || 'as scheduled' },
+    { name: 'amount',        value: amount },
+  ];
 
-  if (phase === 1) {
-    templateName = 'roomhy_rent_due_reminder';
-    params = [
-      { name: 'tenant_name',    value: p.tenantName            || 'Tenant' },
-      { name: 'property_name',  value: p.billingMonthFormatted || p.billingMonth || 'this month' },
-      { name: 'due_date',       value: p.dueDate               || 'as scheduled' },
-      { name: 'amount',         value: String(p.rentAmount     || 0) },
-    ];
-  } else if (phase === 2) {
-    templateName = 'roomhy_rent_penalty_notice';
-    params = [
-      { name: 'tenant_name',      value: p.tenantName            || 'Tenant' },
-      { name: 'billing_month',    value: p.billingMonthFormatted || p.billingMonth || 'this month' },
-      { name: 'days_overdue',     value: String(p.daysSinceDue   || 0) },
-      { name: 'rent_amount',      value: String(p.rentAmount     || 0) },
-      { name: 'electricity_bill', value: p.electricityBill > 0 ? String(p.electricityBill) : 'Pending' },
-      { name: 'penalty_amount',   value: String(p.totalPenalty   || 0) },
-      { name: 'total_due',        value: String(p.totalDue       || 0) },
-    ];
-  } else {
-    templateName = 'roomhy_rent_final_notice';
-    params = [
-      { name: 'tenant_name',      value: p.tenantName            || 'Tenant' },
-      { name: 'billing_month',    value: p.billingMonthFormatted || p.billingMonth || 'this month' },
-      { name: 'days_overdue',     value: String(p.daysSinceDue   || 0) },
-      { name: 'rent_amount',      value: String(p.rentAmount     || 0) },
-      { name: 'electricity_bill', value: p.electricityBill > 0 ? String(p.electricityBill) : 'Pending' },
-      { name: 'penalty_amount',   value: String(p.totalPenalty   || 0) },
-      { name: 'total_due',        value: String(p.totalDue       || 0) },
-    ];
+  const sent = await sendWhatsAppTemplate(phone, 'roomhy_rent_due_reminder', 'en', params, cfg);
+  if (!sent) throw new Error(`WhatsApp template delivery failed`);
+
+  // Follow-up free-form message with payment details (only works within Meta's 24h window)
+  const payMsg = buildPaymentDetailsWA(p);
+  if (payMsg && sendWhatsAppMessage) {
+    sendWhatsAppMessage(phone, payMsg, cfg).catch(() => {});
   }
-
-  const sent = await sendWhatsAppTemplate(phone, templateName, langCode, params, cfg);
-  if (!sent) throw new Error(`WhatsApp template '${templateName}' delivery failed`);
 }
 
 async function sendDashboardNotification(log) {
@@ -323,6 +319,35 @@ function buildEmailHtml(p, phase) {
             <p style="margin:0;background:#eff6ff;border-left:4px solid #2563eb;padding:10px 14px;border-radius:4px;color:#555;font-size:13px">${footerMessage}</p>
           </td>
         </tr>`}
+
+        <!-- Pay Now section -->
+        ${(p.ownerUpiId || p.ownerAccountNumber) ? `
+        <tr>
+          <td style="padding:0 32px 24px">
+            <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #d1fae5;border-radius:8px;overflow:hidden;background:#f0fdf4">
+              <tr>
+                <td colspan="2" style="padding:10px 14px 6px;font-size:12px;font-weight:700;color:#166534;letter-spacing:0.5px;text-transform:uppercase;border-bottom:1px solid #d1fae5">
+                  ✅ Complete Your Payment
+                </td>
+              </tr>
+              ${p.ownerUpiId ? `
+              <tr>
+                <td style="padding:10px 14px;color:#555;font-size:13px;width:140px;vertical-align:top">Pay via UPI</td>
+                <td style="padding:10px 14px;font-weight:700;font-size:14px;color:#166534;font-family:monospace">${p.ownerUpiId}</td>
+              </tr>` : ''}
+              ${p.ownerAccountNumber ? `
+              <tr style="border-top:1px solid #d1fae5">
+                <td style="padding:10px 14px;color:#555;font-size:13px;vertical-align:top">Bank Transfer</td>
+                <td style="padding:10px 14px;font-size:13px;color:#111;line-height:1.7">
+                  ${p.ownerBankName ? `<strong>${p.ownerBankName}</strong><br>` : ''}
+                  ${p.ownerAccountHolder ? `A/c Holder: ${p.ownerAccountHolder}<br>` : ''}
+                  A/c No: <strong style="font-family:monospace">${p.ownerAccountNumber}</strong><br>
+                  ${p.ownerIfscCode ? `IFSC: <strong style="font-family:monospace">${p.ownerIfscCode}</strong>` : ''}
+                </td>
+              </tr>` : ''}
+            </table>
+          </td>
+        </tr>` : ''}
 
         <!-- Footer -->
         <tr>

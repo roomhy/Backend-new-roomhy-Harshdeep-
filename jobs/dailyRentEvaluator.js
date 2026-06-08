@@ -10,6 +10,9 @@ const { queueNotification, dispatchNotification, retryFailedNotifications } = re
 const { shouldSendPhase1Reminder } = require('../engine/penaltyEngine');
 const { acquireLock, releaseLock } = require('../services/cronLockService');
 const Tenant = require('../models/Tenant');
+const Owner  = require('../models/Owner');
+const User   = require('../models/user');
+const CheckinRecord = require('../models/CheckinRecord');
 
 // ─── Date helpers for WhatsApp template variables ────────────────────────────
 
@@ -223,8 +226,25 @@ async function queueNotificationsForInvoice(invoice, penalties, config) {
 
   if (!shouldNotify) return { queued: 0, sent: 0, failed: 0 };
 
-  // Look up live tenant contact
-  const tenantDoc = await Tenant.findById(invoice.tenantId).select('name email phone').lean();
+  // Look up live tenant contact and owner bank details
+  // invoice.ownerId is a User._id — resolve loginId via User model first
+  const [tenantDoc, ownerUserDoc] = await Promise.all([
+    Tenant.findById(invoice.tenantId).select('name email phone').lean(),
+    User.findById(invoice.ownerId).select('loginId').lean(),
+  ]);
+  const ownerLoginId = ownerUserDoc?.loginId || '';
+  const [ownerDoc, checkinDoc] = ownerLoginId ? await Promise.all([
+    Owner.findOne({ loginId: ownerLoginId })
+      .select('checkinUpiId checkinBankAccountNumber checkinIfscCode checkinBankName checkinBranchName checkinAccountHolderName')
+      .lean(),
+    CheckinRecord.findOne({ role: 'owner', loginId: ownerLoginId }).lean(),
+  ]) : [null, null];
+  const _cp        = checkinDoc?.ownerProfile?.payment || {};
+  const _ownerUpi    = ownerDoc?.checkinUpiId             || _cp.upiId             || '';
+  const _ownerAccNum = ownerDoc?.checkinBankAccountNumber || _cp.bankAccountNumber  || '';
+  const _ownerIfsc   = ownerDoc?.checkinIfscCode          || _cp.ifscCode           || '';
+  const _ownerBank   = ownerDoc?.checkinBankName          || '';
+  const _ownerHolder = ownerDoc?.checkinAccountHolderName || _cp.accountHolderName  || '';
 
   const electricityBill         = invoice.electricityBill || 0;
   const electricityUnitsConsumed = invoice.electricityUnitsConsumed || 0;
@@ -245,6 +265,11 @@ async function queueNotificationsForInvoice(invoice, penalties, config) {
     electricityUnitCost: electricityBill > 0 && electricityUnitsConsumed > 0
       ? Math.round(electricityBill / electricityUnitsConsumed) : 0,
     subject: `Rent ${phase === 1 ? 'Reminder' : phase === 2 ? 'Penalty Notice' : 'Final Notice'} — ${invoice.billingMonth}`,
+    ownerUpiId:         _ownerUpi,
+    ownerBankName:      _ownerBank,
+    ownerAccountHolder: _ownerHolder,
+    ownerAccountNumber: _ownerAccNum,
+    ownerIfscCode:      _ownerIfsc,
   };
 
   const notifBase = {

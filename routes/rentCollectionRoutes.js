@@ -18,6 +18,7 @@ router.patch('/invoices/:id/waive',  ctrl.waivePenaltyHandler);
 
 // Payments
 router.post('/payments',             ctrl.recordPaymentHandler);
+router.get('/payments',              ctrl.listPaymentsHandler);
 
 // Penalty
 router.post('/penalty/calculate',    ctrl.previewPenaltyCalculation);

@@ -1,9 +1,11 @@
 'use strict';
 const RentInvoice    = require('../models/RentInvoice');
+const RentPayment    = require('../models/RentPayment');
 const PenaltyConfig  = require('../models/PenaltyConfig');
 const RentAuditLog   = require('../models/RentAuditLog');
 const CronHealth     = require('../models/CronHealth');
 const Tenant         = require('../models/Tenant');
+const Owner          = require('../models/Owner');
 const globalConfig   = require('../config/rentCollectionConfig');
 const {
   generateMonthlyInvoices,
@@ -106,6 +108,21 @@ async function sendReminder(req, res) {
 
     // Always look up the tenant directly — never rely solely on what the frontend passes
     const tenantDoc = await Tenant.findById(invoice.tenantId).select('name email phone').lean();
+    // invoice.ownerId is a User._id — find Owner by loginId from req.user
+    const ownerLoginId = req.user.loginId;
+    const CheckinRecord = require('../models/CheckinRecord');
+    const [ownerDoc, checkinDoc] = await Promise.all([
+      ownerLoginId ? Owner.findOne({ loginId: ownerLoginId })
+        .select('checkinUpiId checkinBankAccountNumber checkinIfscCode checkinBankName checkinBranchName checkinAccountHolderName')
+        .lean() : null,
+      ownerLoginId ? CheckinRecord.findOne({ role: 'owner', loginId: ownerLoginId }).lean() : null,
+    ]);
+    const _cp        = checkinDoc?.ownerProfile?.payment || {};
+    const _ownerUpi    = ownerDoc?.checkinUpiId             || _cp.upiId             || '';
+    const _ownerAccNum = ownerDoc?.checkinBankAccountNumber || _cp.bankAccountNumber  || '';
+    const _ownerIfsc   = ownerDoc?.checkinIfscCode          || _cp.ifscCode           || '';
+    const _ownerBank   = ownerDoc?.checkinBankName          || '';
+    const _ownerHolder = ownerDoc?.checkinAccountHolderName || _cp.accountHolderName  || '';
 
     const [_yr, _mo] = (invoice.billingMonth || '').split('-');
     const billingMonthFormatted = (_yr && _mo)
@@ -130,6 +147,11 @@ async function sendReminder(req, res) {
                                   ? Math.round(invoice.electricityBill / invoice.electricityUnitsConsumed)
                                   : 0,
       totalDue: penalties.totalDue + (invoice.electricityBill || 0),
+      ownerUpiId:         _ownerUpi,
+      ownerBankName:      _ownerBank,
+      ownerAccountHolder: _ownerHolder,
+      ownerAccountNumber: _ownerAccNum,
+      ownerIfscCode:      _ownerIfsc,
     };
 
     if (!payload.tenantEmail || !payload.tenantEmail.includes('@')) {
@@ -160,42 +182,35 @@ async function sendReminder(req, res) {
         : '';
       if (isWhatsAppConfigured(cfg) && phone) {
         const phase = penalties.phase;
-        // Phase 1 was created with 'en'; Phase 2 & 3 with 'en_US' — must match exactly
-        const langCode = phase === 1 ? 'en' : 'en_US';
-        let templateName, params;
-        if (phase === 1) {
-          templateName = 'roomhy_rent_due_reminder';
-          params = [
-            { name: 'tenant_name',    value: payload.tenantName            || 'Tenant' },
-            { name: 'property_name',  value: payload.billingMonthFormatted || payload.billingMonth || 'this month' },
-            { name: 'due_date',       value: payload.dueDate               || 'as scheduled' },
-            { name: 'amount',         value: String(payload.rentAmount     || 0) },
-          ];
-        } else if (phase === 2) {
-          templateName = 'roomhy_rent_penalty_notice';
-          params = [
-            { name: 'tenant_name',      value: payload.tenantName            || 'Tenant' },
-            { name: 'billing_month',    value: payload.billingMonthFormatted || payload.billingMonth || 'this month' },
-            { name: 'days_overdue',     value: String(payload.daysSinceDue   || 0) },
-            { name: 'rent_amount',      value: String(payload.rentAmount     || 0) },
-            { name: 'electricity_bill', value: payload.electricityBill > 0 ? String(payload.electricityBill) : 'Pending' },
-            { name: 'penalty_amount',   value: String(payload.totalPenalty   || 0) },
-            { name: 'total_due',        value: String(payload.totalDue       || 0) },
-          ];
-        } else {
-          templateName = 'roomhy_rent_final_notice';
-          params = [
-            { name: 'tenant_name',      value: payload.tenantName            || 'Tenant' },
-            { name: 'billing_month',    value: payload.billingMonthFormatted || payload.billingMonth || 'this month' },
-            { name: 'days_overdue',     value: String(payload.daysSinceDue   || 0) },
-            { name: 'rent_amount',      value: String(payload.rentAmount     || 0) },
-            { name: 'electricity_bill', value: payload.electricityBill > 0 ? String(payload.electricityBill) : 'Pending' },
-            { name: 'penalty_amount',   value: String(payload.totalPenalty   || 0) },
-            { name: 'total_due',        value: String(payload.totalDue       || 0) },
-          ];
+        // All phases use the single approved template; amount escalates with phase
+        const amount = phase === 1
+          ? String(payload.rentAmount || 0)
+          : String(payload.totalDue   || 0); // rent + electricity + penalty for phase 2/3
+        const params = [
+          { name: 'tenant_name',   value: payload.tenantName            || 'Tenant' },
+          { name: 'property_name', value: payload.billingMonthFormatted || payload.billingMonth || 'this month' },
+          { name: 'due_date',      value: payload.dueDate               || 'as scheduled' },
+          { name: 'amount',        value: amount },
+        ];
+        const waSent = await sendWhatsAppTemplate(phone, 'roomhy_rent_due_reminder', 'en', params, cfg);
+        if (waSent) {
+          channels.push('whatsapp');
+          // Follow-up free-form message with payment details
+          const payLines = [];
+          if (payload.ownerUpiId)         payLines.push(`📱 *UPI ID:* ${payload.ownerUpiId}`);
+          if (payload.ownerAccountNumber) {
+            payLines.push(`🏦 *Bank Transfer:*`);
+            if (payload.ownerBankName)      payLines.push(`   Bank: ${payload.ownerBankName}`);
+            if (payload.ownerAccountHolder) payLines.push(`   A/c Holder: ${payload.ownerAccountHolder}`);
+            payLines.push(`   A/c No: ${payload.ownerAccountNumber}`);
+            if (payload.ownerIfscCode)      payLines.push(`   IFSC: ${payload.ownerIfscCode}`);
+          }
+          if (payLines.length) {
+            const { sendWhatsAppMessage } = require('../utils/mailer');
+            const payMsg = `💳 *Complete Your Payment*\n\n${payLines.join('\n')}\n\nPlease confirm once payment is done 🙏`;
+            sendWhatsAppMessage(phone, payMsg, cfg).catch(() => {});
+          }
         }
-        const waSent = await sendWhatsAppTemplate(phone, templateName, langCode, params, cfg);
-        if (waSent) channels.push('whatsapp');
       }
     } catch (waErr) {
       console.warn('[sendReminder] WhatsApp template failed:', waErr.message);
@@ -330,10 +345,13 @@ async function getInvoiceById(req, res) {
     const invoice = await RentInvoice.findById(req.params.id).lean();
     await assertOwnership(invoice, req.user._id);
 
-    const config = invoice.penaltyConfigSnapshot || await getEffectiveConfig(invoice.ownerId, invoice.propertyId, invoice.unitId);
-    const live   = calculatePenalties(invoice, config);
+    const config   = invoice.penaltyConfigSnapshot || await getEffectiveConfig(invoice.ownerId, invoice.propertyId, invoice.unitId);
+    const live     = calculatePenalties(invoice, config);
+    const payments = await RentPayment.find({ invoiceId: req.params.id })
+      .sort({ paymentDate: -1 })
+      .lean();
 
-    res.json({ success: true, invoice, live, config });
+    res.json({ success: true, invoice, live, config, payments });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, message: err.message });
   }
@@ -416,6 +434,47 @@ async function getMissingContacts(req, res) {
   }
 }
 
+// ─── GET /api/rent-collection/payments ───────────────────────────────────────
+async function listPaymentsHandler(req, res) {
+  try {
+    const ownerId = req.user._id;
+    const limit   = Math.min(parseInt(req.query.limit) || 200, 500);
+    const payments = await RentPayment.find({ ownerId })
+      .sort({ paymentDate: -1 })
+      .limit(limit)
+      .populate('tenantId', 'name roomNo phone email')
+      .populate('invoiceId', 'billingMonth invoiceNumber rentAmount electricityBill totalPenalty totalDue')
+      .lean();
+
+    const shaped = payments.map(p => ({
+      _id:            p._id,
+      transactionId:  p.transactionId || p._id.toString().slice(-8).toUpperCase(),
+      tenantName:     p.tenantId?.name    || '—',
+      roomNo:         p.tenantId?.roomNo  || '—',
+      tenantPhone:    p.tenantId?.phone   || '',
+      tenantEmail:    p.tenantId?.email   || '',
+      amount:         p.amount,
+      paymentMethod:  p.paymentMethod,
+      paymentDate:    p.paymentDate,
+      isPartial:      p.isPartial,
+      remainingAfter: p.remainingAfter,
+      notes:          p.notes,
+      invoiceId:      p.invoiceId?._id || p.invoiceId,
+      billingMonth:   p.invoiceId?.billingMonth   || '',
+      invoiceNumber:  p.invoiceId?.invoiceNumber  || '',
+      rentAmount:     p.invoiceId?.rentAmount      || p.amount,
+      electricityBill: p.invoiceId?.electricityBill || 0,
+      totalPenalty:   p.invoiceId?.totalPenalty    || 0,
+      totalDue:       p.invoiceId?.totalDue        || p.amount,
+      status:         'received',
+    }));
+
+    res.json({ success: true, payments: shaped });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+}
+
 // ─── GET /api/rent-collection/wa-templates ───────────────────────────────────
 // Diagnostic: fetch the exact template names + language codes registered in Meta
 async function getWhatsAppTemplates(req, res) {
@@ -443,5 +502,6 @@ module.exports = {
   getInvoiceById,
   getCronHealth,
   getMissingContacts,
+  listPaymentsHandler,
   getWhatsAppTemplates,
 };
