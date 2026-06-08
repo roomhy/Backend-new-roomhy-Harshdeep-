@@ -164,7 +164,7 @@ router.post('/signup/request-otp', otpLimiter, captchaProtection({ required: fal
         });
     } catch (error) {
         console.error('signup/request-otp error:', error);
-        return res.status(500).json({ message: 'Unable to send verification code', error: error.message });
+        return res.status(500).json({ message: 'Unable to send verification code' });
     }
 });
 
@@ -298,7 +298,7 @@ router.post('/signup/verify-and-create', async (req, res) => {
         });
     } catch (error) {
         console.error('signup/verify-and-create error:', error);
-        return res.status(500).json({ message: 'Unable to complete signup', error: error.message });
+        return res.status(500).json({ message: 'Unable to complete signup' });
     }
 });
 
@@ -382,7 +382,7 @@ router.post('/login/request-otp', otpLimiter, captchaProtection({ required: fals
         });
     } catch (error) {
         console.error('login/request-otp error:', error);
-        return res.status(500).json({ message: 'Unable to send login verification code', error: error.message });
+        return res.status(500).json({ message: 'Unable to send login verification code' });
     }
 });
 
@@ -443,7 +443,7 @@ router.post('/login/verify-otp', async (req, res) => {
         });
     } catch (error) {
         console.error('login/verify-otp error:', error);
-        return res.status(500).json({ message: 'Unable to verify login code', error: error.message });
+        return res.status(500).json({ message: 'Unable to verify login code' });
     }
 });
 
@@ -455,7 +455,7 @@ router.get('/', async (req, res) => {
         res.json(signups);
     } catch (error) {
         console.error('Error fetching signups:', error);
-        res.status(500).json({ message: 'Error fetching signups', error: error.message });
+        res.status(500).json({ message: 'Error fetching signups' });
     }
 });
 
@@ -534,7 +534,7 @@ router.post('/submit', formLimiter, captchaProtection({ required: false }), asyn
         res.status(201).json({ message: 'Signup submitted successfully', data: newSignup });
     } catch (error) {
         console.error('Error submitting signup:', error);
-        res.status(500).json({ message: 'Error submitting signup', error: error.message });
+        res.status(500).json({ message: 'Error submitting signup' });
     }
 });
 
@@ -548,7 +548,7 @@ router.get('/:id', async (req, res) => {
         res.json(signup);
     } catch (error) {
         console.error('Error fetching signup:', error);
-        res.status(500).json({ message: 'Error fetching signup', error: error.message });
+        res.status(500).json({ message: 'Error fetching signup' });
     }
 });
 
@@ -576,7 +576,7 @@ router.put('/:id', async (req, res) => {
         res.json({ message: 'Signup updated successfully', data: signup });
     } catch (error) {
         console.error('Error updating signup:', error);
-        res.status(500).json({ message: 'Error updating signup', error: error.message });
+        res.status(500).json({ message: 'Error updating signup' });
     }
 });
 
@@ -604,7 +604,7 @@ router.put('/verify-by-email/:email', async (req, res) => {
         res.json({ message: 'Signup verified successfully', data: signup });
     } catch (error) {
         console.error('Error verifying signup:', error);
-        res.status(500).json({ message: 'Error verifying signup', error: error.message });
+        res.status(500).json({ message: 'Error verifying signup' });
     }
 });
 
@@ -635,7 +635,7 @@ router.post('/verify', async (req, res) => {
         res.json({ message: 'Signup verified successfully', data: signup });
     } catch (error) {
         console.error('Error verifying signup:', error);
-        res.status(500).json({ message: 'Error verifying signup', error: error.message });
+        res.status(500).json({ message: 'Error verifying signup' });
     }
 });
 
@@ -650,7 +650,7 @@ router.delete('/:id', async (req, res) => {
         res.json({ message: 'Signup deleted successfully' });
     } catch (error) {
         console.error('Error deleting signup:', error);
-        res.status(500).json({ message: 'Error deleting signup', error: error.message });
+        res.status(500).json({ message: 'Error deleting signup' });
     }
 });
 

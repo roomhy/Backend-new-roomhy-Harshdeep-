@@ -93,9 +93,13 @@ reviewSchema.pre('save', function(next) {
   next();
 });
 
+// Fields that must never leave the server on public endpoints
+const PUBLIC_REVIEW_FIELDS = '-email -userId';
+
 // Static method to get featured reviews
 reviewSchema.statics.getFeaturedReviews = function(limit = 6) {
   return this.find({ isFeatured: true, status: 'Active' })
+    .select(PUBLIC_REVIEW_FIELDS)
     .sort({ createdAt: -1 })
     .limit(limit);
 };
@@ -103,6 +107,7 @@ reviewSchema.statics.getFeaturedReviews = function(limit = 6) {
 // Static method to get recent reviews
 reviewSchema.statics.getRecentReviews = function(limit = 10) {
   return this.find({ status: 'Active' })
+    .select(PUBLIC_REVIEW_FIELDS)
     .sort({ createdAt: -1 })
     .limit(limit);
 };
@@ -110,6 +115,7 @@ reviewSchema.statics.getRecentReviews = function(limit = 10) {
 // Static method to get reviews by rating
 reviewSchema.statics.getReviewsByRating = function(minRating = 4, limit = 10) {
   return this.find({ rating: { $gte: minRating }, status: 'Active' })
+    .select(PUBLIC_REVIEW_FIELDS)
     .sort({ rating: -1, createdAt: -1 })
     .limit(limit);
 };
@@ -125,6 +131,7 @@ reviewSchema.statics.getAverageRating = function() {
 // Static method to get reviews for a specific property
 reviewSchema.statics.getPropertyReviews = function(propertyId, limit = 50) {
   return this.find({ propertyId, status: 'Active' })
+    .select(PUBLIC_REVIEW_FIELDS)
     .sort({ createdAt: -1 })
     .limit(limit);
 };

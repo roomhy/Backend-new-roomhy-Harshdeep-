@@ -7,22 +7,24 @@
 const cache = new Map();
 
 // Cache configuration
+// NOTE: paths are matched against req.path, which Express strips of the mount
+// prefix (/api). So '/api/approved-properties' must be '/approved-properties'.
 const CACHE_CONFIG = {
     // Public data - cache for 5 minutes
     PUBLIC_DATA: {
-        paths: ['/api/cities', '/api/property-types', '/api/approved-properties'],
+        paths: ['/cities', '/property-types', '/approved-properties'],
         duration: 5 * 60 * 1000, // 5 minutes
         staleWhileRevalidate: 10 * 60 * 1000 // 10 minutes stale
     },
     // Property listings - cache for 2 minutes
     PROPERTIES: {
-        paths: ['/api/website-property-data', '/api/properties'],
+        paths: ['/website-property-data', '/properties'],
         duration: 2 * 60 * 1000, // 2 minutes
         staleWhileRevalidate: 5 * 60 * 1000 // 5 minutes stale
     },
     // User specific - cache for 30 seconds
     USER_DATA: {
-        paths: ['/api/user', '/api/favorites'],
+        paths: ['/user', '/favorites'],
         duration: 30 * 1000, // 30 seconds
         staleWhileRevalidate: 60 * 1000 // 1 minute stale
     }
@@ -35,6 +37,17 @@ function getCacheKey(req) {
     const url = req.originalUrl || req.url;
     const query = JSON.stringify(req.query);
     return `${req.method}:${url}:${query}`;
+}
+
+/**
+ * Build Cache-Control header value for a given cache config category.
+ * USER_DATA is private; public data categories are publicly cacheable.
+ */
+function getCacheControlHeader(config) {
+    if (config.category === 'USER_DATA') {
+        return `private, max-age=${Math.floor(config.duration / 1000)}`;
+    }
+    return `public, max-age=${Math.floor(config.duration / 1000)}`;
 }
 
 /**
@@ -58,8 +71,10 @@ function apiCache(req, res, next) {
         return next();
     }
 
-    // Skip caching for authenticated/private routes or location management
-    if ((req.headers.authorization || req.path.includes('/api/locations')) && !req.path.includes('/api/property-types')) {
+    // Skip caching for authenticated/private routes or location management.
+    // Paths containing '/public/' are always cacheable regardless of auth state.
+    const isExplicitlyPublic = req.path.includes('/public/');
+    if (!isExplicitlyPublic && (req.headers.authorization || req.path.includes('/locations')) && !req.path.includes('/property-types')) {
         return next();
     }
 
@@ -80,6 +95,7 @@ function apiCache(req, res, next) {
         // Cache is fresh
         if (age < config.duration) {
             console.log(`📦 Cache HIT: ${req.path} (${config.category})`);
+            res.setHeader('Cache-Control', getCacheControlHeader(config));
             return res.json(cached.data);
         }
 
@@ -87,6 +103,7 @@ function apiCache(req, res, next) {
         if (age < (config.duration + config.staleWhileRevalidate)) {
             console.log(`📦 Cache STALE: ${req.path} (serving stale)`);
             // Serve stale and refresh in background
+            res.setHeader('Cache-Control', getCacheControlHeader(config));
             res.json(cached.data);
             
             // Trigger background refresh
@@ -112,8 +129,9 @@ function apiCache(req, res, next) {
                 config: config
             });
             console.log(`📦 Cache STORED: ${req.path}`);
+            res.setHeader('Cache-Control', getCacheControlHeader(config));
         }
-        
+
         return originalJson(data);
     };
 

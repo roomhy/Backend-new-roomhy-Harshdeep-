@@ -106,8 +106,7 @@ router.post('/submit', formLimiter, captchaProtection({ required: false }), asyn
         console.error('Error submitting enquiry:', error);
         res.status(500).json({
             success: false,
-            message: 'Error submitting enquiry',
-            error: error.message
+            message: 'Error submitting enquiry'
         });
     }
 });
@@ -129,8 +128,7 @@ router.get('/all', async (req, res) => {
         console.error('Error fetching enquiries:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching enquiries',
-            error: error.message
+            message: 'Error fetching enquiries'
         });
     }
 });
@@ -153,8 +151,7 @@ router.get('/city/:city', async (req, res) => {
         console.error('Error fetching enquiries by city:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching enquiries',
-            error: error.message
+            message: 'Error fetching enquiries'
         });
     }
 });
@@ -177,8 +174,7 @@ router.get('/status/:status', async (req, res) => {
         console.error('Error fetching enquiries by status:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching enquiries',
-            error: error.message
+            message: 'Error fetching enquiries'
         });
     }
 });
@@ -205,8 +201,7 @@ router.get('/employees/marketing', async (req, res) => {
         console.error('Error fetching marketing employees:', error);
         return res.status(500).json({
             success: false,
-            message: 'Error fetching marketing employees',
-            error: error.message
+            message: 'Error fetching marketing employees'
         });
     }
 });
@@ -310,8 +305,7 @@ router.post('/assign/:enquiryId', async (req, res) => {
         console.error('Error assigning enquiry:', error);
         return res.status(500).json({
             success: false,
-            message: 'Error assigning enquiry',
-            error: error.message
+            message: 'Error assigning enquiry'
         });
     }
 });
@@ -339,8 +333,7 @@ router.get('/:id', async (req, res) => {
         console.error('Error fetching enquiry:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching enquiry',
-            error: error.message
+            message: 'Error fetching enquiry'
         });
     }
 });
@@ -390,8 +383,7 @@ router.put('/:id', protect, authorize('superadmin', 'areamanager'), auditTrail('
         console.error('Error updating enquiry:', error);
         res.status(500).json({
             success: false,
-            message: 'Error updating enquiry',
-            error: error.message
+            message: 'Error updating enquiry'
         });
     }
 });
@@ -419,8 +411,7 @@ router.delete('/:id', protect, authorize('superadmin', 'areamanager'), auditTrai
         console.error('Error deleting enquiry:', error);
         res.status(500).json({
             success: false,
-            message: 'Error deleting enquiry',
-            error: error.message
+            message: 'Error deleting enquiry'
         });
     }
 });
@@ -445,8 +436,7 @@ router.get('/assigned-to/:loginId', async (req, res) => {
         console.error('Error fetching enquiries assigned to employee:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching enquiries',
-            error: error.message
+            message: 'Error fetching enquiries'
         });
     }
 });
@@ -501,8 +491,7 @@ router.get('/', async (req, res) => {
         console.error('Error fetching enquiries:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching enquiries',
-            error: error.message
+            message: 'Error fetching enquiries'
         });
     }
 });
@@ -544,8 +533,7 @@ router.put('/:enquiry_id', protect, authorize('superadmin', 'areamanager'), audi
         console.error('Error updating enquiry:', error);
         res.status(500).json({
             success: false,
-            message: 'Error updating enquiry',
-            error: error.message
+            message: 'Error updating enquiry'
         });
     }
 });
@@ -576,8 +564,7 @@ router.delete('/:enquiry_id', protect, authorize('superadmin', 'areamanager'), a
         console.error('Error deleting enquiry:', error);
         res.status(500).json({
             success: false,
-            message: 'Error deleting enquiry',
-            error: error.message
+            message: 'Error deleting enquiry'
         });
     }
 });

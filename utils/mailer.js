@@ -68,6 +68,52 @@ function normalizeRecipients(to) {
         .map((email) => ({ Email: email }));
 }
 
+function getJson(urlString, headers = {}) {
+    return new Promise((resolve, reject) => {
+        const url = new URL(urlString);
+        const req = https.request(
+            {
+                protocol: url.protocol,
+                hostname: url.hostname,
+                port: url.port || 443,
+                path: `${url.pathname}${url.search}`,
+                method: 'GET',
+                headers,
+            },
+            (res) => {
+                const chunks = [];
+                res.on('data', (d) => chunks.push(d));
+                res.on('end', () => {
+                    resolve({ status: res.statusCode || 500, body: Buffer.concat(chunks).toString('utf8') });
+                });
+            }
+        );
+        req.on('error', reject);
+        req.end();
+    });
+}
+
+async function listWhatsAppTemplates(nameFilter, cfg) {
+    const authHeader = { Authorization: `Bearer ${cfg.whatsappAccessToken}` };
+    const ver        = cfg.whatsappApiVersion;
+    const phoneId    = cfg.whatsappPhoneNumberId;
+
+    // Step 1: resolve WABA ID from phone number ID
+    const phoneRes = await getJson(
+        `https://graph.facebook.com/${ver}/${phoneId}?fields=whatsapp_business_account`,
+        authHeader,
+    );
+    const phoneData = JSON.parse(phoneRes.body);
+    const wabaId    = phoneData?.whatsapp_business_account?.id;
+    if (!wabaId) return { error: 'Could not resolve WABA ID', raw: phoneData };
+
+    // Step 2: list templates (optionally filtered by name)
+    const qs = nameFilter ? `?name=${encodeURIComponent(nameFilter)}&fields=name,language,status,category` : '?fields=name,language,status,category&limit=20';
+    const tplRes  = await getJson(`https://graph.facebook.com/${ver}/${wabaId}/message_templates${qs}`, authHeader);
+    const tplData = JSON.parse(tplRes.body);
+    return tplData;
+}
+
 function postJson(urlString, body, headers = {}) {
     return new Promise((resolve, reject) => {
         const url = new URL(urlString);
@@ -375,15 +421,18 @@ async function sendMail(to, subject, text, html, options = {}) {
         }
     }
 
-    // WhatsApp copy
+    // WhatsApp free-text copy — skipped when the caller handles WhatsApp
+    // via a dedicated template channel (avoids double-sending).
     let whatsappSent = false;
-    try {
-        const whatsappDeliveredCount = await sendWhatsAppByEmailRecipients(recipients, subject, text, html, cfg);
-        whatsappSent = whatsappDeliveredCount > 0;
-        fs.appendFileSync('mail_log.txt', `[${new Date().toISOString()}] WHATSAPP: Delivered to ${whatsappDeliveredCount} recipients\n`);
-    } catch (err) {
-        console.warn('WhatsApp notification copy failed:', err && err.message);
-        fs.appendFileSync('mail_log.txt', `[${new Date().toISOString()}] WHATSAPP FAILED: ${err.message}\n`);
+    if (!options.skipWhatsApp) {
+        try {
+            const whatsappDeliveredCount = await sendWhatsAppByEmailRecipients(recipients, subject, text, html, cfg);
+            whatsappSent = whatsappDeliveredCount > 0;
+            fs.appendFileSync('mail_log.txt', `[${new Date().toISOString()}] WHATSAPP: Delivered to ${whatsappDeliveredCount} recipients\n`);
+        } catch (err) {
+            console.warn('WhatsApp notification copy failed:', err && err.message);
+            fs.appendFileSync('mail_log.txt', `[${new Date().toISOString()}] WHATSAPP FAILED: ${err.message}\n`);
+        }
     }
 
     return emailSent || whatsappSent;
@@ -610,4 +659,72 @@ async function sendDirectWhatsAppOtp(toPhone, otp) {
     return false;
 }
 
-module.exports = { sendCredentials, sendMail, sendWhatsAppMessage, sendDirectWhatsAppOtp, sendKycLinkEmail };
+// ─── WhatsApp template sender ─────────────────────────────────────────────────
+// Sends a pre-approved Meta template message. bodyParams must be ordered
+// exactly as the variables appear in the approved template body.
+
+// bodyParams accepts two formats:
+//   Positional (for templates with {{1}}, {{2}} ...):
+//     ['value1', 'value2']
+//   Named (for templates with {{variable_name}} — Meta REQUIRES parameter_name field):
+//     [{ name: 'tenant_name', value: 'John' }, { name: 'amount', value: '3000' }]
+async function sendWhatsAppTemplate(toPhone, templateName, languageCode, bodyParams, cfg) {
+    if (!toPhone || !templateName) return false;
+    const endpoint = `https://graph.facebook.com/${cfg.whatsappApiVersion}/${cfg.whatsappPhoneNumberId}/messages`;
+    const parameters = bodyParams.map(p => {
+        if (p && typeof p === 'object' && p.name) {
+            return { type: 'text', parameter_name: p.name, text: String(p.value ?? '') };
+        }
+        return { type: 'text', text: String(p ?? '') };
+    });
+
+    // Try the specified language code first, then fall back through common English codes.
+    // Meta error 132001 means "template not found in this language" — safe to retry with another code.
+    const startCode  = languageCode || 'en';
+    const fallbacks  = ['en', 'en_US', 'en_GB'];
+    const codesToTry = [startCode, ...fallbacks.filter(c => c !== startCode)];
+
+    for (const code of codesToTry) {
+        const payload = {
+            messaging_product: 'whatsapp',
+            to: toPhone,
+            type: 'template',
+            template: {
+                name: templateName,
+                language: { code },
+                components: [{ type: 'body', parameters }],
+            },
+        };
+        const response = await postJson(endpoint, payload, {
+            Authorization: `Bearer ${cfg.whatsappAccessToken}`,
+        });
+        if (response.status >= 200 && response.status < 300) {
+            console.log(`WhatsApp template '${templateName}' sent to ${toPhone} [lang=${code}]`);
+            return true;
+        }
+        // Only retry on language-not-found error — any other error is final
+        let errCode = 0;
+        try { errCode = JSON.parse(response.body)?.error?.code; } catch (_) {}
+        if (errCode !== 132001) {
+            console.warn(`WhatsApp template '${templateName}' failed [lang=${code}]:`, response.status, response.body);
+            return false;
+        }
+        console.warn(`WhatsApp template '${templateName}' not found with lang=${code}, trying next...`);
+    }
+
+    console.warn(`WhatsApp template '${templateName}' not found in any language code: ${codesToTry.join(', ')}`);
+    return false;
+}
+
+module.exports = {
+    sendCredentials,
+    sendMail,
+    sendWhatsAppMessage,
+    sendWhatsAppTemplate,
+    listWhatsAppTemplates,
+    sendDirectWhatsAppOtp,
+    sendKycLinkEmail,
+    getMailerConfig,
+    isWhatsAppConfigured,
+    normalizePhoneNumber,
+};

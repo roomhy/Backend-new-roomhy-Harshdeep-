@@ -34,6 +34,10 @@ exports.assignTenant = async (req, res) => {
         const depositBalance = Math.max(0, Number.isFinite(explicitDepositBalance) ? explicitDepositBalance : (depositTotal - depositPaid));
         const electricityChargeAmount = Math.max(0, parseInt(electricityCharge, 10) || 0);
         const maintenanceChargeAmount = Math.max(0, parseInt(maintenanceCharge, 10) || 0);
+        // Normalize bedNo: accept "1", 1, "Bed 1", "bed1" → numeric string "1"
+        const normalizedBedNo = bedNo != null
+            ? String(bedNo).trim().replace(/^[Bb]ed\s*/i, '') || null
+            : null;
         
         let assignedPropertyTitle = String(propertyTitle || '').trim();
 
@@ -137,8 +141,8 @@ exports.assignTenant = async (req, res) => {
                 title: { $regex: `^${String(roomNo).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' }
             });
 
-            if (roomObj && bedNo) {
-                const bIndex = Number(bedNo) - 1;
+            if (roomObj && normalizedBedNo) {
+                const bIndex = Number(normalizedBedNo) - 1;
                 // Ensure array exists
                 if (!roomObj.bedAssignments) {
                     roomObj.bedAssignments = [];
@@ -147,8 +151,19 @@ exports.assignTenant = async (req, res) => {
                     roomObj.bedAssignments.push({});
                 }
                 if (roomObj.bedAssignments[bIndex] && roomObj.bedAssignments[bIndex].tenantId) {
-                    return res.status(400).json({ success: false, message: `Bed ${bedNo} in Room ${roomNo} is already occupied by another tenant.` });
+                    return res.status(400).json({ success: false, message: `Bed ${normalizedBedNo} in Room ${roomNo} is already occupied by another tenant.` });
                 }
+            }
+
+            // Also guard against stale bedAssignments: check Tenant collection directly
+            const activeTenantQuery = { property: property._id, roomNo, checkoutDate: null };
+            if (normalizedBedNo) activeTenantQuery.bedNo = normalizedBedNo;
+            const existingActiveTenant = await Tenant.findOne(activeTenantQuery).select('_id name').lean();
+            if (existingActiveTenant) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Room ${roomNo}${normalizedBedNo ? `, Bed ${normalizedBedNo}` : ''} already has an active tenant (${existingActiveTenant.name}). Move them out first.`
+                });
             }
         }
 
@@ -183,7 +198,7 @@ exports.assignTenant = async (req, res) => {
             roomNo,
             building,
             floor,
-            bedNo,
+            bedNo: normalizedBedNo,
             moveInDate: moveInDate ? new Date(moveInDate) : null,
             agreedRent: parseInt(agreedRent),
             rentAgreementType,
@@ -239,8 +254,8 @@ exports.assignTenant = async (req, res) => {
         await tenant.populate('property', 'title roomType locationCode owner ownerLoginId');
 
         // Update Room's bed assignment
-        if (roomObj && bedNo) {
-            const bIndex = Number(bedNo) - 1;
+        if (roomObj && normalizedBedNo) {
+            const bIndex = Number(normalizedBedNo) - 1;
             roomObj.bedAssignments[bIndex] = {
                 tenantId: tenant._id,
                 tenantName: tenant.name,

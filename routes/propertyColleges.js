@@ -79,8 +79,7 @@ router.put('/properties/:id/colleges', async (req, res) => {
     console.error('❌ Error updating property colleges:', error);
     res.status(500).json({
       success: false,
-      message: 'Internal server error',
-      error: error.message
+      message: 'Internal server error'
     });
   }
 });
@@ -136,8 +135,7 @@ router.get('/colleges', async (req, res) => {
     console.error('❌ Error fetching colleges:', error);
     res.status(500).json({
       success: false,
-      message: 'Internal server error',
-      error: error.message
+      message: 'Internal server error'
     });
   }
 });

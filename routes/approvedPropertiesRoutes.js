@@ -1,59 +1,12 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const ApprovedProperty = require('../models/ApprovedProperty');
 
 // Simple in-memory cache for Overpass responses
 const overpassCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
-// Extract city from property name (e.g., "HOSTEL - Vastrapur, Ahmedabad" -> "Ahmedabad")
-function extractCityFromName(name) {
-  console.log('🏙️ extractCityFromName input:', name);
-  if (!name) {
-    console.log('❌ No name provided');
-    return null;
-  }
-  const parts = name.split(',');
-  console.log('🏙️ Name parts:', parts);
-  if (parts.length > 1) {
-    const city = parts[parts.length - 1].trim();
-    console.log('✅ Extracted city:', city);
-    return city;
-  }
-  console.log('❌ No comma found in name');
-  return null;
-}
-
-// Parse amenities from JSON strings to proper objects
-function parseAmenities(amenities) {
-  if (!amenities || !Array.isArray(amenities)) return [];
-  
-  console.log('🔧 parseAmenities input:', amenities);
-  
-  const parsed = amenities.map(amenity => {
-    if (typeof amenity === 'string') {
-      try {
-        // Try to parse JSON string
-        const parsed = JSON.parse(amenity);
-        console.log('✅ Parsed amenity:', parsed);
-        return parsed;
-      } catch (e) {
-        // If parsing fails, create a basic amenity object
-        const fallback = {
-          name: amenity.replace(/[{}]/g, '').trim(),
-          icon: 'check',
-          category: 'basic'
-        };
-        console.log('❌ Parse failed, fallback:', fallback);
-        return fallback;
-      }
-    }
-    return amenity;
-  });
-  
-  console.log('🔧 parseAmenities output:', parsed);
-  return parsed;
-}
 
 // Haversine distance formula (km)
 function getDistance(lat1, lon1, lat2, lon2) {
@@ -382,10 +335,7 @@ router.post('/save', async (req, res) => {
 
             success: false,
 
-            message: 'Error saving approved property',
-
-            error: error.message
-
+            message: 'Error saving approved property'
         });
 
     }
@@ -437,10 +387,7 @@ router.get('/all', async (req, res) => {
 
             success: false,
 
-            message: 'Error fetching properties',
-
-            error: error.message
-
+            message: 'Error fetching properties'
         });
 
     }
@@ -496,10 +443,7 @@ router.get('/city/:city', async (req, res) => {
 
             success: false,
 
-            message: 'Error fetching properties by city',
-
-            error: error.message
-
+            message: 'Error fetching properties by city'
         });
 
     }
@@ -528,7 +472,32 @@ router.get('/public/approved', async (req, res) => {
 
         const rawProperties = await ApprovedProperty.find({
             status: { $in: ['approved', 'live'] }
-        }).sort({ updatedAt: -1 });
+        })
+        .select({
+            reuploadRequests: 0,
+            'generatedCredentials.tempPassword': 0,
+            'propertyInfo.ownerGmail': 0,
+            'propertyInfo.ownerPhone': 0,
+            'propertyInfo.ownerEmail': 0,
+            contact: 0,
+            state: 0,
+            pincode: 0,
+            landmark: 0,
+            bannerPhoto: 0,
+            websiteBannerPhoto: 0,
+            views: 0,
+            clicks: 0,
+            createdAt: 0,
+            submittedAt: 0,
+            // Detail-only fields — only needed by PropertyDetailsPage, not listing cards
+            propertyViews: 0,
+            roomTypes: 0,
+            facilities: 0,
+            pricing: 0,
+            policies: 0,
+            description: 0,
+        })
+        .sort({ approvedAt: -1 });
 
         const uniqueMap = new Map();
         rawProperties.forEach(p => {
@@ -548,71 +517,53 @@ router.get('/public/approved', async (req, res) => {
         // Transform to match ourproperty.html expectations
 
         const transformedProperties = properties.map(prop => {
-          console.log(`🔍 Backend Debug - Property: ${prop.propertyInfo?.name || prop.visitId}`);
-          console.log(`  City: ${prop.city || prop.propertyInfo?.city || 'Unknown'}`);
-          console.log(`  PropertyViews: ${prop.propertyViews?.length || 0} categories`);
-          if (prop.propertyViews?.length > 0) {
-            console.log(`  First category: ${prop.propertyViews[0].label} (${prop.propertyViews[0].images?.length || 0} images)`);
-          }
-          
+          const propInfo = prop.propertyInfo || {};
+          // city: use stored field, then area as fallback (city is rarely stored directly)
+          const city = prop.city || propInfo.city || propInfo.area || '';
+
+          // Filter out base64-encoded images — these are data bugs that bloat the payload by 300–800 KB per property
+          const rawImages = prop.images?.length > 0 ? prop.images : (propInfo.photos || []);
+          const images = rawImages.filter(img => img && typeof img === 'string' && !img.startsWith('data:'));
+          // strip photos from propInfo to avoid sending them a second time inside the nested object
+          const { photos: _photos, ownerGmail: _g, ownerPhone: _ph, ownerEmail: _em, ...safeInfo } = propInfo;
+
           return {
-
             _id: prop._id,
-
             visitId: prop.visitId,
-
             propertyId: prop.propertyId || prop.visitId,
-
             enquiry_id: prop.enquiry_id || prop.visitId,
-
-            property_name: prop.propertyInfo?.name || 'Property',
-
-            property_type: prop.propertyInfo?.propertyType || '',
-
-            locality: prop.propertyInfo?.area || '',
-
-            city: prop.city || prop.propertyInfo?.city || prop.propertyInfo?.address?.city || extractCityFromName(prop.propertyInfo?.name) || 'Unknown',
-
-            rent: prop.propertyInfo?.rent || 0,
-            featuredImage: prop.featuredImage || prop.propertyInfo?.photos?.[0] || '',
-
-            photos: prop.images && prop.images.length > 0 ? prop.images : (prop.propertyInfo?.photos || []),
-            images: prop.images && prop.images.length > 0 ? prop.images : (prop.propertyInfo?.photos || []),
-
+            property_name: propInfo.name || 'Property',
+            property_type: propInfo.propertyType || '',
+            locality: propInfo.area || '',
+            city,
+            rent: propInfo.rent || 0,
+            monthlyRent: prop.monthlyRent || propInfo.rent || 0,
+            featuredImage: prop.featuredImage || images[0] || '',
+            images,
             professionalPhotos: prop.professionalPhotos || [],
-
             isVerified: true,
-
             rating: 4.5,
-
             reviewsCount: 10,
-
-            propertyInfo: prop.propertyInfo,
-
-            propertyViews: prop.propertyViews || [],
-            amenities: parseAmenities(prop.amenities || prop.propertyInfo?.amenities || []),
-            roomTypes: prop.roomTypes || [],
-            facilities: prop.facilities || {},
+            propertyInfo: safeInfo,
+            amenities: Array.isArray(prop.amenities) ? prop.amenities : (Array.isArray(propInfo.amenities) ? propInfo.amenities : []),
             propertyDetails: prop.propertyDetails || {},
-            pricing: prop.pricing || {},
-            policies: prop.policies || {},
-            tenantDescription: prop.tenantDescription || "",
-            videoUrl: prop.videoUrl || "",
-            state: prop.state || "",
-            pincode: prop.pincode || "",
-            landmark: prop.landmark || "",
-            contact: prop.contact || {},
-            monthlyRent: prop.monthlyRent || prop.propertyInfo?.rent || 0,
-            gender: prop.gender || prop.propertyInfo?.genderSuitability || 'Co-ed',
+            tenantDescription: prop.tenantDescription || '',
+            videoUrl: prop.videoUrl || '',
+            gender: prop.gender || propInfo.genderSuitability || 'Co-ed',
             status: prop.status,
             isLiveOnWebsite: prop.isLiveOnWebsite,
-            submittedAt: prop.submittedAt,
             approvedAt: prop.approvedAt,
-            updatedAt: prop.updatedAt,
-            generatedCredentials: prop.generatedCredentials,
-            ownerLoginId: prop.generatedCredentials?.loginId,
-            description: prop.description || prop.propertyInfo?.description || "",
-            createdBy: prop.approvedBy
+            ownerLoginId: prop.generatedCredentials?.loginId || '',
+            createdBy: prop.generatedCredentials?.loginId || '',
+            nearbyColleges: prop.nearbyColleges || [],
+            highlights: prop.highlights || [],
+            benefits: prop.benefits || [],
+            offers: prop.offers || [],
+            nearbyPlaces: prop.nearbyPlaces || [],
+            ratingBreakdown: prop.ratingBreakdown || {},
+            exclusiveBenefits: prop.exclusiveBenefits || [],
+            latitude: prop.latitude || null,
+            longitude: prop.longitude || null
           };
         });
 
@@ -635,10 +586,7 @@ router.get('/public/approved', async (req, res) => {
 
             success: false,
 
-            message: 'Error fetching public approved properties',
-
-            error: error.message
-
+            message: 'Error fetching public approved properties'
         });
 
     }
@@ -693,10 +641,7 @@ router.get('/approved/all', async (req, res) => {
 
             success: false,
 
-            message: 'Error fetching approved properties',
-
-            error: error.message
-
+            message: 'Error fetching approved properties'
         });
 
     }
@@ -749,8 +694,7 @@ router.get('/colleges/all', async (req, res) => {
         console.error('❌ Error:', error.message);
         res.status(500).json({
             success: false,
-            message: 'Error fetching colleges',
-            error: error.message
+            message: 'Error fetching colleges'
         });
     }
 });
@@ -765,56 +709,51 @@ router.get('/:visitId', async (req, res) => {
 
         const { visitId } = req.params;
 
-        console.log('🔍 [approved-properties/:visitId] Fetching property:', visitId);
-
-        
-
-        const property = await ApprovedProperty.findOne({ visitId });
-
-        
-
-        if (!property) {
-
-            return res.status(404).json({
-
-                success: false,
-
-                message: 'Property not found'
-
-            });
-
+        // Reject obviously malformed IDs (prevents unnecessary DB round-trip)
+        if (!visitId || visitId.length > 100) {
+            return res.status(400).json({ success: false, message: 'Invalid property ID' });
         }
 
+        // Support both visitId strings and MongoDB ObjectIds in the URL
+        const query = mongoose.Types.ObjectId.isValid(visitId)
+            ? { $or: [{ visitId }, { _id: visitId }] }
+            : { visitId };
 
+        const property = await ApprovedProperty.findOne(query).select({
+            // Credentials — never expose to public
+            'generatedCredentials.tempPassword': 0,
+            'generatedCredentials.loginId': 0,
+            // Owner PII
+            'propertyInfo.ownerGmail': 0,
+            'propertyInfo.ownerPhone': 0,
+            'propertyInfo.ownerEmail': 0,
+            // Contact details — internal use only
+            contact: 0,
+            // Admin-only internal data
+            reuploadRequests: 0,
+            // Analytics — internal only
+            views: 0,
+            clicks: 0,
+        });
 
-        console.log('✅ [approved-properties/:visitId] Found property:', visitId);
-
-
+        if (!property) {
+            return res.status(404).json({
+                success: false,
+                message: 'Property not found'
+            });
+        }
 
         res.status(200).json({
-
             success: true,
-
             property: property
-
         });
-
-
 
     } catch (error) {
-
         console.error('❌ [approved-properties/:visitId] Error:', error.message);
-
         res.status(500).json({
-
             success: false,
-
-            message: 'Error fetching property',
-
-            error: error.message
-
+            message: 'Error fetching property'
         });
-
     }
 
 });
@@ -885,10 +824,7 @@ router.put('/:visitId/toggle-live', async (req, res) => {
 
             success: false,
 
-            message: 'Error updating property',
-
-            error: error.message
-
+            message: 'Error updating property'
         });
 
     }
@@ -949,10 +885,7 @@ router.delete('/:visitId', async (req, res) => {
 
             success: false,
 
-            message: 'Error deleting property',
-
-            error: error.message
-
+            message: 'Error deleting property'
         });
 
     }
@@ -1055,10 +988,7 @@ router.put('/:id/toggle-live', async (req, res) => {
 
             success: false,
 
-            message: 'Error toggling live status',
-
-            error: error.message
-
+            message: 'Error toggling live status'
         });
 
     }
@@ -1139,10 +1069,7 @@ router.delete('/:id', async (req, res) => {
 
             success: false,
 
-            message: 'Error deleting property',
-
-            error: error.message
-
+            message: 'Error deleting property'
         });
 
     }

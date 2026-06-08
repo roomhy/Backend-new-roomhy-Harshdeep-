@@ -56,8 +56,7 @@ router.post('/save', async (req, res) => {
         console.error('Error saving property data:', error);
         res.status(500).json({
             success: false,
-            message: 'Error saving property data',
-            error: error.message
+            message: 'Error saving property data'
         });
     }
 });
@@ -81,8 +80,7 @@ router.get('/all', async (req, res) => {
         console.error('Error fetching properties:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching properties',
-            error: error.message
+            message: 'Error fetching properties'
         });
     }
 });
@@ -105,8 +103,7 @@ router.get('/approved', async (req, res) => {
         console.error('Error fetching approved properties:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching approved properties',
-            error: error.message
+            message: 'Error fetching approved properties'
         });
     }
 });
@@ -135,8 +132,7 @@ router.get('/live', async (req, res) => {
         console.error('Error fetching live properties:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching live properties',
-            error: error.message
+            message: 'Error fetching live properties'
         });
     }
 });
@@ -159,8 +155,7 @@ router.get('/offline', async (req, res) => {
         console.error('Error fetching offline properties:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching offline properties',
-            error: error.message
+            message: 'Error fetching offline properties'
         });
     }
 });
@@ -187,8 +182,7 @@ router.get('/:propertyId', async (req, res) => {
         console.error('Error fetching property:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching property',
-            error: error.message
+            message: 'Error fetching property'
         });
     }
 });
@@ -229,8 +223,7 @@ router.put('/:propertyId/status', async (req, res) => {
         console.error('Error updating property status:', error);
         res.status(500).json({
             success: false,
-            message: 'Error updating property status',
-            error: error.message
+            message: 'Error updating property status'
         });
     }
 });
@@ -262,8 +255,7 @@ router.put('/:propertyId/toggle-live', async (req, res) => {
         console.error('Error toggling live status:', error);
         res.status(500).json({
             success: false,
-            message: 'Error toggling live status',
-            error: error.message
+            message: 'Error toggling live status'
         });
     }
 });
@@ -307,8 +299,7 @@ router.put('/banner/photo', async (req, res) => {
         console.error('Error updating banner photo:', error);
         res.status(500).json({
             success: false,
-            message: 'Error updating banner photo',
-            error: error.message
+            message: 'Error updating banner photo'
         });
     }
 });
@@ -328,8 +319,7 @@ router.get('/banner/photo', async (req, res) => {
         console.error('Error fetching banner photo:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching banner photo',
-            error: error.message
+            message: 'Error fetching banner photo'
         });
     }
 });
@@ -357,8 +347,7 @@ router.delete('/:propertyId', async (req, res) => {
         console.error('Error deleting property:', error);
         res.status(500).json({
             success: false,
-            message: 'Error deleting property',
-            error: error.message
+            message: 'Error deleting property'
         });
     }
 });
@@ -409,8 +398,7 @@ router.post('/bulk/save', async (req, res) => {
         console.error('Error bulk saving properties:', error);
         res.status(500).json({
             success: false,
-            message: 'Error bulk saving properties',
-            error: error.message
+            message: 'Error bulk saving properties'
         });
     }
 });

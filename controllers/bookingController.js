@@ -475,12 +475,14 @@ exports.createBookingRequest = async (req, res) => {
                     email: ownerEmail || '',
                     userId: owner_id || '',
                     templateName: 'roomhy_booking_received',
-                    variables: [
-                        ownerName || 'Owner',
-                        property_name || 'Property',
-                        name || 'Guest',
-                        req.body.check_in_date || req.body.move_in_date || 'Not specified'
-                    ]
+                    options: {
+                        namedParams: {
+                            owner_name: ownerName || 'Owner',
+                            property_name: property_name || 'Property',
+                            guest_name: name || 'Guest',
+                            move_in_date: req.body.check_in_date || req.body.move_in_date || 'Not specified'
+                        }
+                    }
                 });
             } catch (whatsAppErr) {
                 console.warn('booking received whatsapp failed:', whatsAppErr.message);
@@ -969,11 +971,12 @@ exports.approveBooking = async (req, res) => {
                 console.warn('booking approved whatsapp failed:', whatsAppErr.message);
             }
 
-            try {
-                ownerAgreementResult = await createAndEmailOwnerAgreementForBooking(request, ownerDoc, approvalDetails);
-            } catch (agreementErr) {
-                console.warn('owner agreement creation failed:', formatErrorDetails(agreementErr));
-            }
+            // Agreement sending disabled
+            // try {
+            //     ownerAgreementResult = await createAndEmailOwnerAgreementForBooking(request, ownerDoc, approvalDetails);
+            // } catch (agreementErr) {
+            //     console.warn('owner agreement creation failed:', formatErrorDetails(agreementErr));
+            // }
         } catch (emailErr) {
             console.error('Error sending approval email:', emailErr);
         }

@@ -17,8 +17,7 @@ router.get('/all', async (req, res) => {
         console.error('Error fetching approved properties:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching approved properties',
-            error: error.message
+            message: 'Error fetching approved properties'
         });
     }
 });
@@ -45,8 +44,7 @@ router.get('/public/approved', async (req, res) => {
         console.error('Error fetching public approved properties:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching approved properties',
-            error: error.message
+            message: 'Error fetching approved properties'
         });
     }
 });
@@ -69,8 +67,7 @@ router.get('/website/live', async (req, res) => {
         console.error('Error fetching website properties:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching website properties',
-            error: error.message
+            message: 'Error fetching website properties'
         });
     }
 });
@@ -93,8 +90,7 @@ router.get('/ourproperty/live', async (req, res) => {
         console.error('Error fetching ourproperty properties:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching ourproperty properties',
-            error: error.message
+            message: 'Error fetching ourproperty properties'
         });
     }
 });
@@ -118,8 +114,7 @@ router.get('/city/:city', async (req, res) => {
         console.error('Error fetching properties by city:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching properties by city',
-            error: error.message
+            message: 'Error fetching properties by city'
         });
     }
 });
@@ -148,8 +143,7 @@ router.get('/:propertyId', async (req, res) => {
         console.error('Error fetching property:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching property',
-            error: error.message
+            message: 'Error fetching property'
         });
     }
 });
@@ -182,8 +176,7 @@ router.put('/:propertyId/toggle-website', async (req, res) => {
         console.error('Error toggling website visibility:', error);
         res.status(500).json({
             success: false,
-            message: 'Error toggling website visibility',
-            error: error.message
+            message: 'Error toggling website visibility'
         });
     }
 });
@@ -216,8 +209,7 @@ router.put('/:propertyId/toggle-ourproperty', async (req, res) => {
         console.error('Error toggling ourproperty visibility:', error);
         res.status(500).json({
             success: false,
-            message: 'Error toggling ourproperty visibility',
-            error: error.message
+            message: 'Error toggling ourproperty visibility'
         });
     }
 });
@@ -249,8 +241,7 @@ router.put('/:propertyId', async (req, res) => {
         console.error('Error updating property:', error);
         res.status(500).json({
             success: false,
-            message: 'Error updating property',
-            error: error.message
+            message: 'Error updating property'
         });
     }
 });
@@ -280,8 +271,7 @@ router.delete('/:propertyId', async (req, res) => {
         console.error('Error deleting property:', error);
         res.status(500).json({
             success: false,
-            message: 'Error deleting property',
-            error: error.message
+            message: 'Error deleting property'
         });
     }
 });

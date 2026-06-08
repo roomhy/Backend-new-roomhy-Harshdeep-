@@ -1,5 +1,6 @@
 const ElectricityMeter = require('../models/ElectricityMeter');
 const Tenant = require('../models/Tenant');
+const RentInvoice = require('../models/RentInvoice');
 
 /**
  * Update current meter reading for a specific room and month
@@ -51,6 +52,28 @@ exports.updateMeterReading = async (req, res) => {
         currentRecord.totalBill = currentRecord.unitsConsumed * currentRecord.unitCost;
         
         await currentRecord.save();
+
+        // Auto-update the rent invoice for this tenant+month with the electricity bill
+        try {
+            const tenant = await Tenant.findOne({ property: propertyId, roomNo }).select('_id').lean();
+            if (tenant) {
+                await RentInvoice.findOneAndUpdate(
+                    { tenantId: tenant._id, billingMonth, status: { $in: ['PENDING', 'PARTIAL'] } },
+                    {
+                        $set: {
+                            electricityBill:          currentRecord.totalBill,
+                            electricityUnitsConsumed: currentRecord.unitsConsumed,
+                            electricityPrevReading:   currentRecord.previousReading,
+                            electricityCurrReading:   currentRecord.currentReading,
+                            electricityReadingAdded:  true,
+                        },
+                    }
+                );
+            }
+        } catch (linkErr) {
+            console.error('[electricityController] invoice link error:', linkErr.message);
+            // non-fatal — reading is saved, invoice update is best-effort
+        }
 
         res.json({
             success: true,

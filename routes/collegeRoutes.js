@@ -80,8 +80,7 @@ router.get('/by-city/:city', (req, res) => {
     console.error('Error fetching colleges:', error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching colleges',
-      error: error.message
+      message: 'Error fetching colleges'
     });
   }
 });
@@ -113,8 +112,7 @@ router.get('/property/:propertyId', async (req, res) => {
     console.error('Error fetching property colleges:', error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching colleges',
-      error: error.message
+      message: 'Error fetching colleges'
     });
   }
 });
@@ -133,8 +131,7 @@ router.get('/cities/all', (req, res) => {
     console.error('Error fetching cities:', error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching cities',
-      error: error.message
+      message: 'Error fetching cities'
     });
   }
 });
@@ -247,8 +244,7 @@ router.get('/fetch-nearby', async (req, res) => {
     console.error('❌ Error:', error.message);
     res.status(500).json({
       success: false,
-      message: 'Error fetching colleges',
-      error: error.message
+      message: 'Error fetching colleges'
     });
   }
 });
@@ -295,8 +291,7 @@ router.get('/fetch-all-cities', async (req, res) => {
     console.error('❌ Error:', error.message);
     res.status(500).json({
       success: false,
-      message: 'Error fetching colleges',
-      error: error.message
+      message: 'Error fetching colleges'
     });
   }
 });

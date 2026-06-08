@@ -23,9 +23,10 @@ router.get('/', async (req, res) => {
     }
     
     const reviews = await Review.find(query)
+      .select('-email -userId')
       .sort({ createdAt: -1 })
       .limit(parseInt(limit));
-    
+
     res.status(200).json({
       success: true,
       count: reviews.length,
@@ -35,8 +36,7 @@ router.get('/', async (req, res) => {
     console.error('Error fetching reviews:', error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching reviews',
-      error: error.message
+      message: 'Error fetching reviews'
     });
   }
 });
@@ -57,11 +57,7 @@ router.get('/featured', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching featured reviews:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching featured reviews',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error fetching featured reviews' });
   }
 });
 
@@ -71,9 +67,9 @@ router.get('/featured', async (req, res) => {
 router.get('/top-rated', async (req, res) => {
   try {
     const { limit = 6, minRating = 4 } = req.query;
-    
+
     const reviews = await Review.getReviewsByRating(parseInt(minRating), parseInt(limit));
-    
+
     res.status(200).json({
       success: true,
       count: reviews.length,
@@ -81,11 +77,7 @@ router.get('/top-rated', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching top rated reviews:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching top rated reviews',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error fetching top rated reviews' });
   }
 });
 
@@ -97,7 +89,7 @@ router.get('/stats', async (req, res) => {
     const stats = await Review.getAverageRating();
     const totalReviews = await Review.countDocuments({ status: 'Active' });
     const featuredReviews = await Review.countDocuments({ isFeatured: true, status: 'Active' });
-    
+
     res.status(200).json({
       success: true,
       data: {
@@ -108,11 +100,7 @@ router.get('/stats', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching review stats:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching review statistics',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error fetching review statistics' });
   }
 });
 
@@ -133,11 +121,7 @@ router.get('/property/:propertyId', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching property reviews:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching property reviews',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error fetching property reviews' });
   }
 });
 
@@ -147,21 +131,17 @@ router.get('/property/:propertyId', async (req, res) => {
 router.get('/property/:propertyId/stats', async (req, res) => {
   try {
     const { propertyId } = req.params;
-    
+
     const stats = await Review.getPropertyAverageRating(propertyId);
     const totalReviews = await Review.countDocuments({ propertyId, status: 'Active' });
-    
+
     if (stats.length === 0) {
       return res.status(200).json({
         success: true,
-        data: {
-          avgRating: 0,
-          totalReviews: 0,
-          ratingBreakdown: { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 }
-        }
+        data: { avgRating: 0, totalReviews: 0, ratingBreakdown: { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 } }
       });
     }
-    
+
     const result = stats[0];
     res.status(200).json({
       success: true,
@@ -179,11 +159,7 @@ router.get('/property/:propertyId/stats', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching property rating stats:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching property rating stats',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error fetching property rating stats' });
   }
 });
 
@@ -206,8 +182,7 @@ router.get('/property/:propertyId/user-review', protect, async (req, res) => {
     console.error('Error checking user review:', error);
     res.status(500).json({
       success: false,
-      message: 'Error checking user review',
-      error: error.message
+      message: 'Error checking user review'
     });
   }
 });
@@ -217,15 +192,15 @@ router.get('/property/:propertyId/user-review', protect, async (req, res) => {
 // ============================================================
 router.get('/:id', async (req, res) => {
   try {
-    const review = await Review.findById(req.params.id);
-    
+    const review = await Review.findById(req.params.id).select('-email -userId');
+
     if (!review) {
       return res.status(404).json({
         success: false,
         message: 'Review not found'
       });
     }
-    
+
     res.status(200).json({
       success: true,
       data: review
@@ -234,8 +209,7 @@ router.get('/:id', async (req, res) => {
     console.error('Error fetching review:', error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching review',
-      error: error.message
+      message: 'Error fetching review'
     });
   }
 });
@@ -319,8 +293,7 @@ router.post('/', protect, async (req, res) => {
     console.error('Error creating review:', error);
     res.status(500).json({
       success: false,
-      message: 'Error creating review',
-      error: error.message
+      message: 'Error creating review'
     });
   }
 });
@@ -331,25 +304,25 @@ router.post('/', protect, async (req, res) => {
 router.put('/:id', protect, authorize('admin', 'superadmin'), async (req, res) => {
   try {
     const { isFeatured, isVerified, status } = req.body;
-    
+
     const review = await Review.findByIdAndUpdate(
       req.params.id,
-      { 
-        isFeatured, 
-        isVerified, 
+      {
+        isFeatured,
+        isVerified,
         status,
         updatedAt: Date.now()
       },
       { new: true, runValidators: true }
     );
-    
+
     if (!review) {
       return res.status(404).json({
         success: false,
         message: 'Review not found'
       });
     }
-    
+
     res.status(200).json({
       success: true,
       message: 'Review updated successfully',
@@ -359,8 +332,7 @@ router.put('/:id', protect, authorize('admin', 'superadmin'), async (req, res) =
     console.error('Error updating review:', error);
     res.status(500).json({
       success: false,
-      message: 'Error updating review',
-      error: error.message
+      message: 'Error updating review'
     });
   }
 });
@@ -391,8 +363,7 @@ router.get('/user/my-reviews', protect, async (req, res) => {
     console.error('Error fetching user reviews:', error);
     res.status(500).json({
       success: false,
-      message: 'Error fetching user reviews',
-      error: error.message
+      message: 'Error fetching user reviews'
     });
   }
 });
@@ -404,7 +375,6 @@ router.put('/:id', protect, async (req, res) => {
   try {
     const { text, rating } = req.body;
 
-    // Find review and check ownership
     const review = await Review.findOne({
       _id: req.params.id,
       userId: req.user.id
@@ -417,7 +387,6 @@ router.put('/:id', protect, async (req, res) => {
       });
     }
 
-    // Update fields
     if (text) review.reviewText = text;
     if (text) review.text = text;
     if (rating) review.rating = rating;
@@ -433,8 +402,7 @@ router.put('/:id', protect, async (req, res) => {
     console.error('Error updating review:', error);
     res.status(500).json({
       success: false,
-      message: 'Error updating review',
-      error: error.message
+      message: 'Error updating review'
     });
   }
 });
@@ -465,8 +433,7 @@ router.delete('/:id', protect, async (req, res) => {
     console.error('Error deleting review:', error);
     res.status(500).json({
       success: false,
-      message: 'Error deleting review',
-      error: error.message
+      message: 'Error deleting review'
     });
   }
 });
@@ -493,8 +460,7 @@ router.delete('/admin/:id', protect, authorize('admin', 'superadmin'), async (re
     console.error('Error deleting review:', error);
     res.status(500).json({
       success: false,
-      message: 'Error deleting review',
-      error: error.message
+      message: 'Error deleting review'
     });
   }
 });

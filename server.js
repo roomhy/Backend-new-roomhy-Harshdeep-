@@ -8,6 +8,7 @@ const { Server } = require('socket.io');
 const path = require('path');
 const dns = require('dns');
 const { startCronJobs } = require('./services/cronJobs');
+const { registerAllCronJobs } = require('./jobs/dailyRentEvaluator');
 const { startEscalationJob } = require('./controllers/complaintController');
 let escalationJobStarted = false;
 const initChatSocket = require('./socket/chatSocket');
@@ -58,6 +59,7 @@ app.use((req, res, next) => {
         res.setHeader('Access-Control-Allow-Credentials', 'true');
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
         res.setHeader('Access-Control-Allow-Headers', req.headers['access-control-request-headers'] || 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+        res.setHeader('Access-Control-Max-Age', '86400');
     }
 
     if (req.method === 'OPTIONS') {
@@ -346,6 +348,8 @@ try {
     console.log('  ✓ reviewRoutes');
     app.use('/api/rents', require('./routes/rentRoutes'));
     console.log('  ✓ rentRoutes');
+    app.use('/api/rent-collection', require('./routes/rentCollectionRoutes'));
+    console.log('  ✓ rentCollectionRoutes');
     app.use('/api/electricity', require('./routes/electricityRoutes'));
     console.log('  ✓ electricityRoutes');
     app.use('/api/complaints', require('./routes/complaintRoutes'));
@@ -501,6 +505,7 @@ function startServer() {
         // Start cron jobs for automated rent reminders
         try {
             startCronJobs();
+            registerAllCronJobs();
         } catch (err) {
             console.warn('⚠️  Cron jobs failed to start:', err.message);
         }
