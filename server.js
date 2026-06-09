@@ -357,6 +357,72 @@ app.get('/api/health', (req, res) => {
     });
 });
 
+// ── TEST ENDPOINT: Trigger agreement expiry for a tenant (remove in production) ──
+app.get('/api/test/agreement-expiry/:loginId', async (req, res) => {
+    try {
+        const Tenant = require('./models/Tenant');
+        const Notification = require('./models/Notification');
+        const { sendMail } = require('./utils/mailer');
+
+        const tenant = await Tenant.findOne({ loginId: req.params.loginId });
+        if (!tenant) return res.status(404).json({ success: false, message: 'Tenant not found' });
+
+        const originalDate = tenant.moveInDate;
+        const originalStatus = tenant.status;
+
+        // Set moveInDate to 11 months + 4 days ago
+        const testDate = new Date();
+        testDate.setMonth(testDate.getMonth() - 11);
+        testDate.setDate(testDate.getDate() - 4);
+        tenant.moveInDate = testDate;
+        await tenant.save();
+
+        const now = new Date(); now.setHours(0,0,0,0);
+        const start = new Date(testDate); start.setHours(0,0,0,0);
+        const daysSince = Math.floor((now - start) / 86400000);
+        const monthDiff = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
+        const dayInMonthDiff = now.getDate() - start.getDate();
+        const isGraceExpired = monthDiff > 11 || (monthDiff === 11 && dayInMonthDiff >= 3);
+
+        let actions = [];
+
+        if (isGraceExpired && tenant.status === 'active') {
+            tenant.status = 'inactive';
+            await tenant.save();
+            actions.push('status_changed_to_inactive');
+
+            if (tenant.loginId) {
+                await Notification.create({ toLoginId: tenant.loginId, type: 'system', title: '⚠️ Agreement Expired — Account Suspended', message: 'Your 11-month agreement has expired and the 3-day grace period is over. Your account has been marked inactive.', read: false });
+                actions.push('tenant_notified');
+            }
+            if (tenant.ownerLoginId) {
+                await Notification.create({ toLoginId: tenant.ownerLoginId, type: 'system', title: `🚨 Tenant ${tenant.name} — Agreement Expired`, message: `Tenant ${tenant.name} (Room: ${tenant.roomNo || 'N/A'}) agreement has expired. They have been marked inactive.`, read: false });
+                actions.push('owner_notified');
+            }
+            if (tenant.email) {
+                await sendMail(tenant.email, '⚠️ Your Roomhy Agreement Has Expired', `Dear ${tenant.name}, your agreement has expired.`, `<h2>Agreement Expired</h2><p>Your account is now inactive. Contact your property owner.</p>`).catch(() => {});
+                actions.push('email_sent');
+            }
+        }
+
+        res.json({
+            success: true,
+            tenant: tenant.name,
+            loginId: tenant.loginId,
+            originalMoveInDate: originalDate,
+            testMoveInDate: testDate,
+            originalStatus,
+            newStatus: tenant.status,
+            daysSince,
+            monthDiff,
+            dayInMonthDiff,
+            isGraceExpired,
+            actions
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 
 
 // Cache management endpoints (admin only - add auth later)
