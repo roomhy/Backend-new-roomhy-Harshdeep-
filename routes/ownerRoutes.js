@@ -280,8 +280,10 @@ router.get('/:loginId/tenants', async (req, res) => {
         await ownerController.healOwnerProperties(loginId);
         const properties = await Property.find({ ownerLoginId: loginId, isDeleted: { $ne: true } }).select('_id');
         const propertyIds = properties.map((p) => p._id);
-        const tenants = await require('../models/Tenant').find({ property: { $in: propertyIds }, isDeleted: { $ne: true } });
-        return res.json({ tenants });
+        const tenants = await require('../models/Tenant').find({ property: { $in: propertyIds }, isDeleted: { $ne: true } }).lean();
+        const { enrichTenantsWithDues } = require('../services/tenantDuesService');
+        const tenantsWithDues = await enrichTenantsWithDues(tenants);
+        return res.json({ tenants: tenantsWithDues });
     } catch (err) {
         console.error('❌ Error fetching owner tenants:', err.message);
         return res.status(500).json({ error: err.message });

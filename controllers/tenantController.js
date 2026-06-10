@@ -8,6 +8,7 @@ const generateTenantId = require('../utils/generateTenantId');
 const crypto = require('crypto');
 const mailer = require('../utils/mailer');
 const { sendTemplateToResolvedUser } = require('../utils/whatsappBot');
+const { enrichTenantsWithDues } = require('../services/tenantDuesService');
 
 /**
  * Assign a tenant to a room
@@ -480,12 +481,13 @@ exports.assignTenant = async (req, res) => {
 exports.getAllTenants = async (req, res) => {
     try {
         const tenants = await Tenant.find({ isDeleted: { $ne: true } })
-            .populate('property', 'title locationCode')
+            .populate('property', 'title locationCode ownerLoginId')
             .populate('user', 'name email phone')
             .sort({ createdAt: -1 })
             .lean();
 
-        res.json({ success: true, tenants });
+        const tenantsWithDues = await enrichTenantsWithDues(tenants);
+        res.json({ success: true, tenants: tenantsWithDues });
     } catch (error) {
         console.error('getAllTenants error:', error);
         res.status(500).json({ success: false, message: 'Server error' });
@@ -536,7 +538,8 @@ exports.getTenantsByOwner = async (req, res) => {
             if (!seen.has(id)) { seen.add(id); tenants.push(t); }
         }
 
-        res.json({ success: true, tenants });
+        const tenantsWithDues = await enrichTenantsWithDues(tenants);
+        res.json({ success: true, tenants: tenantsWithDues });
     } catch (error) {
         console.error('getTenantsByOwner error:', error);
         res.status(500).json({ success: false, message: 'Server error' });

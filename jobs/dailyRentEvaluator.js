@@ -330,17 +330,36 @@ async function runMonthlyInvoiceGenerator() {
   console.log(`[InvoiceGenerator] Generating invoices for ${billingMonth}...`);
 
   try {
-    const tenants = await Tenant.find({ isActive: true, checkoutDate: null }).lean();
+    const Property = require('../models/Property');
+    const tenants = await Tenant.find({
+      status: { $in: ['active', 'pending'] },
+      isDeleted: { $ne: true },
+      agreedRent: { $gt: 0 },
+    }).lean();
 
     const grouped = {};
     for (const t of tenants) {
-      const key = String(t.ownerId || t.owner);
+      let ownerUserId = null;
+      if (t.ownerLoginId) {
+        const ownerUser = await User.findOne({ loginId: t.ownerLoginId, role: 'owner' }).select('_id').lean();
+        ownerUserId = ownerUser?._id;
+      }
+      if (!ownerUserId && t.property) {
+        const prop = await Property.findById(t.property).select('ownerLoginId').lean();
+        if (prop?.ownerLoginId) {
+          const ownerUser = await User.findOne({ loginId: prop.ownerLoginId, role: 'owner' }).select('_id').lean();
+          ownerUserId = ownerUser?._id;
+        }
+      }
+      if (!ownerUserId) continue;
+
+      const key = String(ownerUserId);
       if (!grouped[key]) grouped[key] = [];
       grouped[key].push({
         tenantId:   t._id,
-        propertyId: t.propertyId || t.property,
-        unitId:     t.unitId || t.room,
-        rentAmount: t.rentAmount || t.monthlyRent || 0,
+        propertyId: t.property,
+        unitId:     t.room,
+        rentAmount: t.agreedRent || 0,
       });
     }
 

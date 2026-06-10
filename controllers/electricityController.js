@@ -1,6 +1,5 @@
 const ElectricityMeter = require('../models/ElectricityMeter');
-const Tenant = require('../models/Tenant');
-const RentInvoice = require('../models/RentInvoice');
+const { syncElectricityToInvoice } = require('../services/tenantDuesService');
 
 /**
  * Update current meter reading for a specific room and month
@@ -53,26 +52,14 @@ exports.updateMeterReading = async (req, res) => {
         
         await currentRecord.save();
 
-        // Auto-update the rent invoice for this tenant+month with the electricity bill
+        // Sync electricity bill to tenant's rent invoice (create invoice if missing)
         try {
-            const tenant = await Tenant.findOne({ property: propertyId, roomNo }).select('_id').lean();
-            if (tenant) {
-                await RentInvoice.findOneAndUpdate(
-                    { tenantId: tenant._id, billingMonth, status: { $in: ['PENDING', 'PARTIAL'] } },
-                    {
-                        $set: {
-                            electricityBill:          currentRecord.totalBill,
-                            electricityUnitsConsumed: currentRecord.unitsConsumed,
-                            electricityPrevReading:   currentRecord.previousReading,
-                            electricityCurrReading:   currentRecord.currentReading,
-                            electricityReadingAdded:  true,
-                        },
-                    }
-                );
+            const syncResult = await syncElectricityToInvoice(propertyId, roomNo, billingMonth, currentRecord);
+            if (!syncResult.synced) {
+                console.warn('[electricityController] invoice sync skipped:', syncResult.reason, { propertyId, roomNo, billingMonth });
             }
         } catch (linkErr) {
             console.error('[electricityController] invoice link error:', linkErr.message);
-            // non-fatal — reading is saved, invoice update is best-effort
         }
 
         res.json({

@@ -4,8 +4,9 @@ const RentInvoice  = require('../models/RentInvoice');
 const RentPayment  = require('../models/RentPayment');
 const PenaltyConfig = require('../models/PenaltyConfig');
 const RentAuditLog  = require('../models/RentAuditLog');
-const Tenant        = require('../models/Tenant');
-const globalConfig  = require('../config/rentCollectionConfig');
+const Tenant           = require('../models/Tenant');
+const ElectricityMeter = require('../models/ElectricityMeter');
+const globalConfig     = require('../config/rentCollectionConfig');
 const { calculatePenalties, determinePhase, calcDaysSinceDue } = require('../engine/penaltyEngine');
 
 // ─── Config priority: unit → property → owner-default → .env global ──────────
@@ -53,6 +54,32 @@ function buildGlobalConfig() {
   };
 }
 
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function attachPendingElectricity(invoice, tenantId) {
+  const tenant = await Tenant.findById(tenantId).select('property roomNo').lean();
+  if (!tenant?.roomNo || !tenant.property) return;
+
+  const meter = await ElectricityMeter.findOne({
+    property: tenant.property,
+    roomNo: { $regex: new RegExp(`^${escapeRegex(tenant.roomNo)}$`, 'i') },
+    billingMonth: invoice.billingMonth,
+  }).lean();
+
+  if (!meter?.totalBill) return;
+
+  invoice.electricityBill          = meter.totalBill;
+  invoice.electricityUnitsConsumed = meter.unitsConsumed || 0;
+  invoice.electricityPrevReading     = meter.previousReading || 0;
+  invoice.electricityCurrReading     = meter.currentReading || 0;
+  invoice.electricityReadingAdded    = true;
+
+  const { updates } = await evaluateInvoice(invoice);
+  Object.assign(invoice, updates);
+}
+
 // ─── Invoice generation (idempotent, race-safe via unique index) ──────────────
 
 async function generateMonthlyInvoices(ownerId, billingMonth, tenants) {
@@ -94,6 +121,7 @@ async function generateMonthlyInvoices(ownerId, billingMonth, tenants) {
         penaltyConfigSnapshot: config,
       });
 
+      await attachPendingElectricity(invoice, tenant.tenantId);
       await invoice.save();
       await RentAuditLog.create({
         action:     'INVOICE_CREATED',
