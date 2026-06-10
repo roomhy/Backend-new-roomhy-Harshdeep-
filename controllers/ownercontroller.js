@@ -422,8 +422,25 @@ exports.getAllOwners = async (req, res) => {
         const checkinMap = {};
         checkins.forEach(c => { checkinMap[c.loginId] = c; });
 
-        const enrichedOwners = owners.map(o => ({
+        const enrichedOwners = owners.map(o => {
+            const checkin = checkinMap[o.loginId];
+            const kycComplete = ['verified', 'submitted'].includes(o.kyc?.status) ||
+                checkin?.ownerKyc?.otpVerified ||
+                checkin?.ownerKyc?.digilockerVerified ||
+                checkin?.ownerFinalVerified;
+            const shouldBeActive = o.isActive === true || kycComplete;
+
+            // Self-heal owners stuck inactive after completing digital check-in
+            if (shouldBeActive && o.isActive !== true) {
+                Owner.updateOne(
+                    { loginId: o.loginId },
+                    { $set: { isActive: true, 'kyc.status': 'verified', 'kyc.verifiedAt': o.kyc?.verifiedAt || new Date() } }
+                ).catch(() => {});
+            }
+
+            return {
             ...o,
+            isActive: shouldBeActive,
             propertyTitle: primaryPropertyMap[o.loginId]?.title || '',
             propertyName: primaryPropertyMap[o.loginId]?.title || '',
             propertyLocationCode: primaryPropertyMap[o.loginId]?.locationCode || '',
@@ -454,7 +471,7 @@ exports.getAllOwners = async (req, res) => {
             ifscCode: o.profile?.ifscCode || o.ifscCode || o.checkinIfscCode || (checkinMap[o.loginId]?.ownerProfile?.payment?.ifscCode || ''),
             branchName: o.profile?.branchName || o.branchName || o.checkinBranchName || '',
             aadharNumber: o.kyc?.aadharNumber || o.kyc?.aadhaarNumber || o.checkinAadhaarNumber || '',
-            kycStatus: o.kyc?.status || 'pending',
+            kycStatus: kycComplete ? 'verified' : (o.kyc?.status || 'pending'),
             documentImage: o.kyc?.documentImage || '',
             profileFilled: !!o.profileFilled,
             password: o.credentials?.password || o.checkinPassword || '',
@@ -470,7 +487,8 @@ exports.getAllOwners = async (req, res) => {
             isLiveOnWebsite: Boolean(approvedPropertyMap[o.loginId]?.isLiveOnWebsite),
             websiteStatus: approvedPropertyMap[o.loginId]?.status || '',
             city: o.profile?.city || o.city || primaryPropertyMap[o.loginId]?.city || ''
-        }));
+            };
+        });
 
         res.json({
             success: true,

@@ -802,7 +802,14 @@ router.post('/owner/kyc/verify-otp', otpLimiter, async (req, res) => {
         
         const updatedOwner = await Owner.findOneAndUpdate(
             { loginId: String(loginId).toUpperCase() },
-            { $set: { 'kyc.status': 'submitted', 'kyc.submittedAt': new Date() } },
+            {
+                $set: {
+                    'kyc.status': 'verified',
+                    'kyc.submittedAt': new Date(),
+                    'kyc.verifiedAt': new Date(),
+                    isActive: true,
+                },
+            },
             { new: true }
         );
 
@@ -1039,7 +1046,15 @@ router.post('/owner/kyc/digilocker/complete', otpLimiter, async (req, res) => {
 
         const owner = await Owner.findOneAndUpdate(
             { loginId: normalizedLoginId },
-            { $set: { 'kyc.status': 'submitted', 'kyc.provider': 'digilocker', 'kyc.submittedAt': new Date() } },
+            {
+                $set: {
+                    'kyc.status': 'verified',
+                    'kyc.provider': 'digilocker',
+                    'kyc.submittedAt': new Date(),
+                    'kyc.verifiedAt': new Date(),
+                    isActive: true,
+                },
+            },
             { new: true }
         );
 
@@ -1096,6 +1111,17 @@ router.post('/owner/final-submit', async (req, res) => {
         record.ownerFinalVerified = true;
         record.ownerSubmittedAt = new Date();
         await record.save();
+
+        await Owner.findOneAndUpdate(
+            { loginId: normalizedLoginId },
+            {
+                $set: {
+                    'kyc.status': 'verified',
+                    'kyc.verifiedAt': new Date(),
+                    isActive: true,
+                },
+            }
+        );
 
         // Send owner dashboard link email after final submit
         const owner = ownerDoc || await Owner.findOne({ loginId: normalizedLoginId }).lean();

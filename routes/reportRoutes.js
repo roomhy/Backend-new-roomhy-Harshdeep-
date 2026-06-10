@@ -1,5 +1,15 @@
 const express = require('express');
 const router = express.Router();
+const {
+    fetchTenantsForReport,
+    fetchRoomsForReport,
+    formatTenantRow,
+    formatDuesRow,
+    formatOccupancyRow,
+    calcOccupancyKpis,
+    buildTenantFilter,
+    getOwnerProperties,
+} = require('../utils/reportDataHelpers');
 
 /**
  * POST /api/reports/generate
@@ -53,66 +63,39 @@ router.post('/generate', async (req, res) => {
         }
         
         else if (reportName?.includes('Dues') || reportName?.includes('Outstanding')) {
-            const Tenant = require('../models/Tenant');
-            const filter = { ownerLoginId, status: 'active' };
-            if (propertyId) filter.property = propertyId;
-            const tenants = await Tenant.find(filter).sort({ createdAt: -1 }).limit(500);
-            
-            reportData = tenants.map(t => ({
-                'Tenant Name': t.name || 'N/A',
-                'Property': t.propertyName || 'N/A',
-                'Room': t.roomNo || 'N/A',
-                'Monthly Rent': t.rentAmount || 0,
-                'Pending Amount': t.dueAmount || 0,
-                'Phone': t.phone || 'N/A',
-                'Move In Date': t.joiningDate ? new Date(t.joiningDate).toLocaleDateString('en-IN') : 'N/A',
-            }));
-            const totalDues = tenants.reduce((sum, t) => sum + (t.dueAmount || 0), 0);
-            kpis = { totalDues, tenantsWithDues: tenants.filter(t => (t.dueAmount || 0) > 0).length };
+            const { tenants, propTitleMap } = await fetchTenantsForReport(ownerLoginId, {
+                propertyId,
+                status: 'active',
+                withDues: true,
+            });
+
+            reportData = tenants.map(t => formatDuesRow(t, propTitleMap));
+            const totalDues = tenants.reduce((sum, t) => sum + (t.dueAmount || t.dues || t.balance || 0), 0);
+            kpis = {
+                totalDues,
+                tenantsWithDues: tenants.filter(t => (t.dueAmount || t.dues || t.balance || 0) > 0).length,
+            };
         }
         
         // ===== OCCUPANCY REPORTS =====
         else if (category === 'Occupancy' || reportName?.includes('Occupancy') || reportName?.includes('Bed') || reportName?.includes('Room')) {
-            const Room = require('../models/Room');
-            const filter = { ownerLoginId };
-            if (propertyId) filter.propertyId = propertyId;
-            const rooms = await Room.find(filter).sort({ roomNo: 1 }).limit(500);
-            
-            const totalBeds = rooms.reduce((sum, r) => sum + (r.beds || 0), 0);
-            const occupiedBeds = rooms.filter(r => !r.isAvailable).reduce((sum, r) => sum + (r.beds || 0), 0);
-            
-            reportData = rooms.map(r => ({
-                'Property': r.propertyName || 'N/A',
-                'Room': r.title || 'N/A',
-                'Type': r.type || 'N/A',
-                'Beds': r.beds || 0,
-                'Available': r.isAvailable ? 'Yes' : 'No',
-                'Price': r.price ? `₹${r.price}` : 'N/A',
-                'Status': r.status || 'N/A',
-            }));
-            kpis = { totalBeds, occupiedBeds, vacantBeds: totalBeds - occupiedBeds, occupancyRate: totalBeds > 0 ? Math.round(occupiedBeds / totalBeds * 100) : 0 };
+            const { rooms, propTitleMap } = await fetchRoomsForReport(ownerLoginId, propertyId);
+            reportData = rooms.map(r => formatOccupancyRow(r, propTitleMap));
+            kpis = calcOccupancyKpis(rooms);
         }
         
         // ===== TENANT REPORTS =====
         else if (category === 'Tenant' || reportName?.includes('Tenant')) {
-            const Tenant = require('../models/Tenant');
-            const filter = { ownerLoginId };
-            if (propertyId) filter.property = propertyId;
-            if (status) filter.status = status;
-            const tenants = await Tenant.find(filter).sort({ createdAt: -1 }).limit(500);
-            
-            reportData = tenants.map(t => ({
-                'Tenant Name': t.name || 'N/A',
-                'Property': t.propertyName || 'N/A',
-                'Room': t.roomNo || 'N/A',
-                'Phone': t.phone || 'N/A',
-                'Move In Date': t.joiningDate ? new Date(t.joiningDate).toLocaleDateString('en-IN') : 'N/A',
-                'Monthly Rent': t.rentAmount || 0,
-                'KYC Status': t.kycStatus || 'N/A',
-                'Agreement Status': t.agreementStatus || 'N/A',
-                'Status': t.status || 'N/A',
-            }));
-            kpis = { totalTenants: tenants.length, activeTenants: tenants.filter(t => t.status === 'active').length };
+            const { tenants, propTitleMap } = await fetchTenantsForReport(ownerLoginId, {
+                propertyId,
+                status: status || null,
+            });
+
+            reportData = tenants.map(t => formatTenantRow(t, propTitleMap));
+            kpis = {
+                totalTenants: tenants.length,
+                activeTenants: tenants.filter(t => t.status === 'active').length,
+            };
         }
         
         // ===== LEAD REPORTS =====
@@ -251,24 +234,31 @@ router.get('/summary/:ownerLoginId', async (req, res) => {
         const Room = require('../models/Room');
         const { ownerLoginId } = req.params;
 
+        const properties = await getOwnerProperties(ownerLoginId);
+        const propertyIds = properties.map(p => p._id);
+        const tenantFilter = propertyIds.length
+            ? { $or: [{ ownerLoginId }, { property: { $in: propertyIds } }], isDeleted: { $ne: true } }
+            : { ownerLoginId, isDeleted: { $ne: true } };
+
         const [
             activeTenants, openComplaints, allLeads,
-            recentRents, rooms
+            recentRents, roomDocs
         ] = await Promise.allSettled([
-            Tenant.countDocuments({ ownerLoginId, status: 'active' }),
+            Tenant.countDocuments({ ...tenantFilter, status: 'active' }),
             Complaint.countDocuments({ ownerLoginId, status: { $in: ['Open', 'Pending'] } }),
             PropertyEnquiry.countDocuments({ ownerLoginId }),
-            Rent.find({ ownerLoginId, status: 'Paid' }).sort({ createdAt: -1 }).limit(100),
-            Room.find({ ownerLoginId }).select('totalBeds occupiedBeds'),
+            Rent.find({ ownerLoginId, paymentStatus: { $in: ['paid', 'completed'] } }).sort({ createdAt: -1 }).limit(100),
+            propertyIds.length
+                ? Room.find({ property: { $in: propertyIds }, isDeleted: { $ne: true } }).select('beds bedAssignments isAvailable').lean()
+                : Promise.resolve([]),
         ]);
 
         const totalRevenue = recentRents.status === 'fulfilled'
-            ? recentRents.value.reduce((s, r) => s + (r.amount || 0), 0) : 0;
+            ? recentRents.value.reduce((s, r) => s + (r.rentAmount || r.paidAmount || r.amount || 0), 0) : 0;
 
-        const allRooms = rooms.status === 'fulfilled' ? rooms.value : [];
-        const totalBeds = allRooms.reduce((s, r) => s + (r.totalBeds || 0), 0);
-        const occupiedBeds = allRooms.reduce((s, r) => s + (r.occupiedBeds || 0), 0);
-        const occupancyPct = totalBeds > 0 ? Math.round(occupiedBeds / totalBeds * 100) : 0;
+        const allRooms = roomDocs.status === 'fulfilled' ? roomDocs.value : [];
+        const occ = calcOccupancyKpis(allRooms);
+        const occupancyPct = occ.occupancyRate;
 
         return res.status(200).json({
             success: true,

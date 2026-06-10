@@ -25,20 +25,28 @@ exports.generateReport = async (req, res) => {
       const propertyIds = properties.map(p => p._id);
 
       if (reportNameLower.includes('tenant') || reportNameLower.includes('booking') || reportNameLower.includes('attendance')) {
-        // Fetch Tenants
-        const tenants = await Tenant.find({ property: { $in: propertyIds } }).populate('room').populate('property').lean();
+        const tenants = await Tenant.find({ property: { $in: propertyIds }, isDeleted: { $ne: true } })
+          .populate('room', 'title')
+          .populate('property', 'title')
+          .lean();
         if (tenants.length > 0) {
           for (const t of tenants) {
             const row = fields.map(f => {
               const fLower = f.toLowerCase();
               if (fLower.includes('tenant') || fLower.includes('name')) return `"${t.name || 'N/A'}"`;
-              if (fLower.includes('room')) return `"${t.room?.title || 'N/A'}"`;
+              if (fLower.includes('property')) return `"${t.property?.title || t.propertyTitle || 'N/A'}"`;
+              if (fLower.includes('room')) return `"${t.room?.title || t.roomNo || 'N/A'}"`;
               if (fLower.includes('phone') || fLower.includes('contact')) return `"${t.phone || 'N/A'}"`;
-              if (fLower.includes('doj') || fLower.includes('joining')) return `"${t.doj ? new Date(t.doj).toLocaleDateString() : 'N/A'}"`;
-              if (fLower.includes('rent') || fLower.includes('amount')) return `"${t.rentAmount || 0}"`;
-              if (fLower.includes('unpaid') || fLower.includes('dues')) return `"${t.unpaidDues || 0}"`;
-              if (fLower.includes('status')) return `"${t.status || 'Active'}"`;
-              return '"-"'; // default empty
+              if (fLower.includes('doj') || fLower.includes('joining') || fLower.includes('move in')) {
+                const d = t.moveInDate || t.joiningDate || t.createdAt;
+                return `"${d ? new Date(d).toLocaleDateString('en-IN') : 'N/A'}"`;
+              }
+              if (fLower.includes('rent') || fLower.includes('amount')) return `"${t.agreedRent || t.rentAmount || 0}"`;
+              if (fLower.includes('unpaid') || fLower.includes('dues')) return `"${t.dueAmount || t.unpaidDues || 0}"`;
+              if (fLower.includes('kyc')) return `"${t.kycStatus || 'N/A'}"`;
+              if (fLower.includes('agreement')) return `"${t.agreementSigned ? 'signed' : (t.agreementStatus || 'pending')}"`;
+              if (fLower.includes('status')) return `"${t.status || 'active'}"`;
+              return '"-"';
             });
             csvData += row.join(',') + '\n';
           }
