@@ -32,16 +32,48 @@ try {
 async function initDemoOwner() {
     if (!Owner) return;
     try {
-        const demo = await Owner.findOne({ loginId: 'DEMOOWNER' });
+        const demoLoginId = 'DEMOOWNER';
+        let demo = await Owner.findOne({ loginId: demoLoginId });
+        
         if (!demo) {
-            await Owner.create({
-                loginId: 'DEMOOWNER',
+            demo = await Owner.create({
+                loginId: demoLoginId,
                 name: 'Demo Owner',
                 email: 'demo@roomhy.com',
-                password: 'demo123', // In production it should be hashed, assuming pre-save hook handles it
-                isActive: true
+                phone: '0000000000',
+                isActive: true,
+                credentials: {
+                    password: 'demo123',
+                    firstTime: false
+                }
             });
-            console.log('✅ Demo owner created: DEMOOWNER / demo123');
+            console.log('✅ Demo owner profile created: DEMOOWNER');
+        } else if (!demo.credentials || !demo.credentials.password) {
+            // Patch existing broken demo account
+            demo.credentials = { password: 'demo123', firstTime: false };
+            await demo.save();
+            console.log('✅ Demo owner profile patched with credentials');
+        }
+
+        const User = require('../models/user');
+        if (User) {
+            const demoUser = await User.findOne({ loginId: demoLoginId });
+            if (!demoUser) {
+                await User.create({
+                    loginId: demoLoginId,
+                    name: 'Demo Owner',
+                    email: 'demo@roomhy.com',
+                    phone: '0000000000',
+                    password: 'demo123', // Will be hashed by User pre-save hook
+                    role: 'owner',
+                    isActive: true,
+                    requirePasswordReset: false
+                });
+                console.log('✅ Demo owner auth record created: DEMOOWNER / demo123');
+            } else if (demoUser.requirePasswordReset !== false) {
+                demoUser.requirePasswordReset = false;
+                await demoUser.save();
+            }
         }
     } catch (err) {
         console.error('❌ Failed to init demo owner:', err.message);
