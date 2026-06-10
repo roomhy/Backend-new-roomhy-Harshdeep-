@@ -587,6 +587,7 @@ exports.approveOwner = async (req, res) => {
         owner.checkinPassword = password;
         owner.kyc = owner.kyc || {};
         owner.kyc.status = 'sent'; // Indicate link sent
+        owner.isActive = true;
         await owner.save();
 
         // Send email

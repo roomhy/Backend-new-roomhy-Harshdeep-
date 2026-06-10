@@ -81,7 +81,8 @@ exports.approveVisit = async (req, res) => {
             address: info.address,
             locationCode: info.locationCode,
             credentials: { password: finalPassword, firstTime: true },
-            kyc: { status: 'pending' }
+            kyc: { status: 'pending' },
+            isActive: true
         });
 
         // 3. Create Property

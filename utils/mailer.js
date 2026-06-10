@@ -56,9 +56,20 @@ function normalizeRecipients(to) {
     if (!to) return [];
     if (Array.isArray(to)) {
         return to
-            .map((x) => (x || '').toString().trim())
+            .map((x) => {
+                if (typeof x === 'object' && x !== null) {
+                    return x.Email || x.email || x.address || x.to || '';
+                }
+                return (x || '').toString().trim();
+            })
             .filter(Boolean)
             .map((email) => ({ Email: email }));
+    }
+    if (typeof to === 'object' && to !== null) {
+        const email = to.Email || to.email || to.address || to.to;
+        if (email) {
+            return [{ Email: String(email).trim() }];
+        }
     }
     return to
         .toString()
