@@ -11,8 +11,8 @@ const path = require('path');
 // replace the image file or update LOGO_PATHS below.
 // ======================================================
 const LOGO_PATHS = [
-    path.join(__dirname, '../../Roohmy-Frontend/public/website/images/seal1.png'),
-    path.join(__dirname, '../../Roohmy-Frontend/public/website/images/seal1.png'),
+    path.join(__dirname, '../../Roomhy-Frontend/public/website/images/seal1.png'),
+    path.join(__dirname, '../../Roomhy-Frontend/public/website/images/seal2.png'),
     path.join(__dirname, '../public/website/images/seal1.png')
 ];
 
