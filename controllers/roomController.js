@@ -96,22 +96,33 @@ exports.getRoomsByProperty = async (req, res) => {
     try {
         const { propertyId } = req.params;
         const { unassigned } = req.query;
-        console.log("Searching rooms for propertyId:", propertyId, "unassigned:", unassigned);
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 0;
+        console.log("Searching rooms for propertyId:", propertyId, "unassigned:", unassigned, "page:", page, "limit:", limit);
         
         // Ensure propertyId is a valid ObjectId
         if (!mongoose.Types.ObjectId.isValid(propertyId)) {
           return res.status(400).json({ message: "Invalid Property ID format" });
         }
         
-        // Sync property occupancy (which auto-generates rooms from roomTypes if they don't exist yet)
-        try {
-            const ownerController = require('./ownercontroller');
-            await ownerController.syncPropertyOccupancyData(propertyId);
-        } catch (syncErr) {
-            console.error(`❌ Error syncing occupancy during getRoomsByProperty for property ${propertyId}:`, syncErr.message);
+        // We skip syncing occupancy during paginated fetches to improve speed
+        if (!limit) {
+            try {
+                const ownerController = require('./ownercontroller');
+                await ownerController.syncPropertyOccupancyData(propertyId);
+            } catch (syncErr) {
+                console.error(`❌ Error syncing occupancy during getRoomsByProperty for property ${propertyId}:`, syncErr.message);
+            }
         }
 
-        let rooms = await Room.find({ property: new mongoose.Types.ObjectId(propertyId), isDeleted: { $ne: true } }).lean();
+        const query = { property: new mongoose.Types.ObjectId(propertyId), isDeleted: { $ne: true } };
+        let roomsQuery = Room.find(query);
+        
+        if (limit > 0) {
+            roomsQuery = roomsQuery.skip((page - 1) * limit).limit(limit);
+        }
+        
+        let rooms = await roomsQuery.lean();
 
         if (unassigned === 'true') {
             const Tenant = require('../models/Tenant');
@@ -144,8 +155,9 @@ exports.getRoomsByProperty = async (req, res) => {
             });
         }
         
+        const total = await Room.countDocuments(query);
         console.log(`Found ${rooms.length} rooms for property ${propertyId}`);
-        res.json(rooms);
+        res.json({ success: true, rooms, total });
     } catch (err) {
         console.error("Error in getRoomsByProperty:", err);
         res.status(500).json({ message: err.message });
@@ -243,6 +255,7 @@ exports.getRoomsByOwner = async (req, res) => {
     try {
         const { ownerLoginId } = req.params;
         const normalizedOwnerId = String(ownerLoginId || '').trim().toUpperCase();
+        const limit = parseInt(req.query.limit) || 0;
 
         // Dynamically import ownerController to prevent circular dependency issues
         const ownerController = require('./ownercontroller');
@@ -250,18 +263,31 @@ exports.getRoomsByOwner = async (req, res) => {
 
         const properties = await Property.find({ ownerLoginId: normalizedOwnerId, isDeleted: { $ne: true } }).lean();
         
-        // Sync property occupancy (this auto-generates rooms from roomTypes if they don't exist yet)
-        for (const prop of properties) {
-            try {
-                await ownerController.syncPropertyOccupancyData(prop._id);
-            } catch (syncErr) {
-                console.error(`❌ Error syncing occupancy during getRoomsByOwner for property ${prop._id}:`, syncErr.message);
+        const propertyIds = properties.map(p => p._id);
+        
+        let rooms = [];
+        const propertyTotals = {};
+
+        if (limit > 0) {
+            // Fetch limited rooms per property
+            for (const propId of propertyIds) {
+                const propRooms = await Room.find({ property: propId, isDeleted: { $ne: true } })
+                                            .populate('property', 'title')
+                                            .limit(limit)
+                                            .lean();
+                const total = await Room.countDocuments({ property: propId, isDeleted: { $ne: true } });
+                rooms.push(...propRooms);
+                propertyTotals[propId.toString()] = total;
+            }
+        } else {
+            // Fetch all rooms
+            rooms = await Room.find({ property: { $in: propertyIds }, isDeleted: { $ne: true } }).populate('property', 'title').lean();
+            for (const propId of propertyIds) {
+                propertyTotals[propId.toString()] = rooms.filter(r => String(r.property?._id || r.property) === propId.toString()).length;
             }
         }
 
-        const propertyIds = properties.map(p => p._id);
-        const rooms = await Room.find({ property: { $in: propertyIds }, isDeleted: { $ne: true } }).populate('property', 'title').lean();
-        res.json({ success: true, rooms });
+        res.json({ success: true, rooms, propertyTotals });
     } catch (err) {
         console.error("Error getting rooms by owner:", err);
         res.status(500).json({ success: false, message: err.message });

@@ -74,7 +74,8 @@ router.patch('/:id', protect, authorize('superadmin', 'areamanager', 'owner'), a
             if (tenant.room && tenant.bedNo) {
                 const oldRoom = await Room.findById(tenant.room);
                 if (oldRoom && oldRoom.bedAssignments) {
-                    const oldIndex = Number(tenant.bedNo) - 1;
+                    const oldBedNoRaw = String(tenant.bedNo).trim().replace(/^[Bb]ed\s*/i, '');
+                    const oldIndex = Number(oldBedNoRaw) - 1;
                     if (oldIndex >= 0 && oldRoom.bedAssignments[oldIndex] && String(oldRoom.bedAssignments[oldIndex].tenantId) === String(tenant._id)) {
                         oldRoom.bedAssignments[oldIndex] = {};
                         oldRoom.markModified('bedAssignments');
@@ -85,7 +86,8 @@ router.patch('/:id', protect, authorize('superadmin', 'areamanager', 'owner'), a
 
             // Assign the new bed assignment
             const targetRoomNo = req.body.roomNo !== undefined ? req.body.roomNo : tenant.roomNo;
-            const targetBedNo = req.body.bedNo !== undefined ? req.body.bedNo : tenant.bedNo;
+            const targetBedNoRaw = req.body.bedNo !== undefined ? req.body.bedNo : tenant.bedNo;
+            const targetBedNoStr = String(targetBedNoRaw).trim().replace(/^[Bb]ed\s*/i, '');
 
             let newRoomObj = null;
             if (targetRoomNo) {
@@ -97,8 +99,8 @@ router.patch('/:id', protect, authorize('superadmin', 'areamanager', 'owner'), a
 
             if (newRoomObj) {
                 tenant.room = newRoomObj._id;
-                if (targetBedNo) {
-                    const bIndex = Number(targetBedNo) - 1;
+                if (targetBedNoStr) {
+                    const bIndex = Number(targetBedNoStr) - 1;
                     if (bIndex >= 0) {
                         if (!newRoomObj.bedAssignments) {
                             newRoomObj.bedAssignments = [];
@@ -109,7 +111,7 @@ router.patch('/:id', protect, authorize('superadmin', 'areamanager', 'owner'), a
 
                         const occupant = newRoomObj.bedAssignments[bIndex];
                         if (occupant && occupant.tenantId && String(occupant.tenantId) !== String(tenant._id)) {
-                            return res.status(400).json({ message: `Bed ${targetBedNo} in Room ${targetRoomNo} is already occupied.` });
+                            return res.status(400).json({ message: `Bed ${targetBedNoRaw} in Room ${targetRoomNo} is already occupied.` });
                         }
 
                         newRoomObj.bedAssignments[bIndex] = {

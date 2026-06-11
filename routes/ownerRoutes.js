@@ -163,21 +163,41 @@ router.get('/:loginId/rooms', async (req, res) => {
         // Find properties owned by this owner
         const properties = await Property.find({ ownerLoginId: loginId, isDeleted: { $ne: true } }).select('_id title');
         
-        // Sync property occupancy (this auto-generates rooms from roomTypes if they don't exist yet)
+        // Sync property occupancy (fire-and-forget to avoid blocking API response)
         for (const prop of properties) {
-            try {
-                await ownerController.syncPropertyOccupancyData(prop._id);
-            } catch (syncErr) {
+            ownerController.syncPropertyOccupancyData(prop._id).catch(syncErr => {
                 console.error(`❌ Error syncing occupancy during rooms fetch for property ${prop._id}:`, syncErr.message);
-            }
+            });
         }
 
         const propertyIds = properties.map(p => p._id);
+        const limit = parseInt(req.query.limit) || 0;
 
-        // Find rooms that belong to those properties
-        const rooms = await Room.find({ property: { $in: propertyIds }, isDeleted: { $ne: true } }).populate('property', 'title ownerLoginId');
+        let rooms = [];
+        const propertyTotals = {};
 
-        return res.json({ properties, rooms });
+        if (limit > 0) {
+            // Only fetch 'limit' rooms per property for paginated initial load
+            for (const propId of propertyIds) {
+                const propRooms = await Room.find({ property: propId, isDeleted: { $ne: true } })
+                    .populate('property', 'title ownerLoginId')
+                    .limit(limit)
+                    .lean();
+                const total = await Room.countDocuments({ property: propId, isDeleted: { $ne: true } });
+                rooms.push(...propRooms);
+                propertyTotals[propId.toString()] = total;
+            }
+        } else {
+            // Fallback to all rooms if no limit
+            rooms = await Room.find({ property: { $in: propertyIds }, isDeleted: { $ne: true } })
+                .populate('property', 'title ownerLoginId')
+                .lean();
+            for (const propId of propertyIds) {
+                propertyTotals[propId.toString()] = rooms.filter(r => String(r.property?._id || r.property) === propId.toString()).length;
+            }
+        }
+
+        return res.json({ properties, rooms, propertyTotals });
     } catch (err) {
         console.error('❌ Error fetching owner rooms:', err.message);
         return res.status(500).json({ error: err.message });
@@ -193,19 +213,9 @@ router.get('/:loginId/properties', async (req, res) => {
         
         const syncedProperties = [];
         for (const prop of properties) {
-            const occupancy = await ownerController.syncPropertyOccupancyData(prop._id);
-            if (occupancy) {
-                const propObj = prop.toObject ? prop.toObject() : prop;
-                propObj.roomCount = occupancy.totalRooms;
-                propObj.bedCount = occupancy.totalBeds;
-                propObj.occupiedBeds = occupancy.occupiedBeds;
-                propObj.occupiedRooms = occupancy.occupiedRooms;
-                propObj.vacantRooms = occupancy.vacantRooms;
-                propObj.vacantBeds = occupancy.vacantBeds;
-                syncedProperties.push(propObj);
-            } else {
-                syncedProperties.push(prop);
-            }
+            // Trigger async sync in background to keep data fresh without delaying response
+            ownerController.syncPropertyOccupancyData(prop._id).catch(err => console.error('Async sync error:', err));
+            syncedProperties.push(prop);
         }
         return res.json({ properties: syncedProperties });
     } catch (err) {
@@ -281,8 +291,13 @@ router.get('/:loginId/tenants', async (req, res) => {
         const properties = await Property.find({ ownerLoginId: loginId, isDeleted: { $ne: true } }).select('_id');
         const propertyIds = properties.map((p) => p._id);
         const tenants = await require('../models/Tenant').find({ property: { $in: propertyIds }, isDeleted: { $ne: true } }).lean();
-        const { enrichTenantsWithDues } = require('../services/tenantDuesService');
-        const tenantsWithDues = await enrichTenantsWithDues(tenants);
+        
+        let tenantsWithDues = tenants;
+        if (req.query.nodues !== 'true') {
+            const { enrichTenantsWithDues } = require('../services/tenantDuesService');
+            tenantsWithDues = await enrichTenantsWithDues(tenants);
+        }
+        
         return res.json({ tenants: tenantsWithDues });
     } catch (err) {
         console.error('❌ Error fetching owner tenants:', err.message);
