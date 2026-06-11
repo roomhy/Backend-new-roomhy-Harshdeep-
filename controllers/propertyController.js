@@ -108,11 +108,13 @@ exports.addProperty = async (req, res) => {
       }
     }
 
-    // Only superadmin can add directly as active. Everyone else (owner, manager) goes to pending_approval.
-    if (req.user && req.user.role === 'superadmin') {
-        propertyData.status = 'active'; // Auto active for superadmin
-        propertyData.isPublished = true;
-        propertyData.isLiveOnWebsite = true;
+    // Staff members can add properties with their requested status (defaulting to active). Everyone else (owner) goes to pending_approval.
+    const isStaff = req.user && ['superadmin', 'admin', 'employee', 'manager', 'areamanager'].includes(req.user.role);
+    
+    if (isStaff) {
+        propertyData.status = req.body.status || 'active'; 
+        propertyData.isPublished = propertyData.status === 'active';
+        propertyData.isLiveOnWebsite = propertyData.status === 'active';
     } else {
         propertyData.status = 'pending_approval';
         propertyData.isPublished = false;
