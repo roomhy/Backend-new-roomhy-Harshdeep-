@@ -108,6 +108,20 @@ const bookingRequestSchema = new mongoose.Schema({
     latitude: { type: Number },
     longitude: { type: Number },
 
+    // Dispute tracking
+    dispute_count: { type: Number, default: 0 },
+    has_active_dispute: { type: Boolean, default: false },
+
+    // Chat funnel timestamps
+    chat_enabled_at: { type: Date, default: null },
+    payment_link_sent_at: { type: Date, default: null },
+    payment_completed_at: { type: Date, default: null },
+    booking_confirmed_at: { type: Date, default: null },
+    move_in_completed_at: { type: Date, default: null },
+
+    // Chat room linking
+    chat_room_id: { type: String, default: null },
+
     created_at: { type: Date, default: Date.now },
     updated_at: { type: Date, default: Date.now }
 });

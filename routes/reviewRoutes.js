@@ -42,6 +42,25 @@ router.get('/', async (req, res) => {
 });
 
 // ============================================================
+// GET: Fetch all reviews for admin management (protected)
+// ============================================================
+router.get('/admin/all', protect, authorize('admin', 'superadmin'), async (req, res) => {
+  try {
+    const reviews = await Review.find().sort({ createdAt: -1 });
+    res.status(200).json({
+      success: true,
+      data: reviews
+    });
+  } catch (error) {
+    console.error('Error fetching admin reviews:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// ============================================================
 // GET: Fetch featured reviews for homepage (public)
 // ============================================================
 router.get('/featured', async (req, res) => {
@@ -305,22 +324,43 @@ router.put('/:id', protect, authorize('admin', 'superadmin'), async (req, res) =
   try {
     const { isFeatured, isVerified, status } = req.body;
 
-    const review = await Review.findByIdAndUpdate(
-      req.params.id,
-      {
-        isFeatured,
-        isVerified,
-        status,
-        updatedAt: Date.now()
-      },
-      { new: true, runValidators: true }
-    );
-
+    const review = await Review.findById(req.params.id);
     if (!review) {
       return res.status(404).json({
         success: false,
         message: 'Review not found'
       });
+    }
+
+    const oldStatus = review.status;
+    review.isFeatured = isFeatured;
+    review.isVerified = isVerified;
+    review.status = status;
+    review.updatedAt = Date.now();
+    await review.save();
+
+    // Explicit audit log for review moderation
+    try {
+      const AuditLog = require('../models/AuditLog');
+      await AuditLog.create({
+        actorId: req.user?.loginId || req.user?._id || 'SUPER_ADMIN',
+        actorRole: req.user?.role || 'superadmin',
+        module: 'Review',
+        action: 'Moderate Review',
+        method: 'PUT',
+        path: req.originalUrl || `/api/reviews/${req.params.id}`,
+        statusCode: 200,
+        payload: {
+          reviewId: req.params.id,
+          isFeatured,
+          isVerified,
+          status,
+          oldValue: oldStatus,
+          newValue: status
+        }
+      });
+    } catch (auditErr) {
+      console.warn('Review moderation audit log failed:', auditErr.message);
     }
 
     res.status(200).json({

@@ -201,6 +201,7 @@ exports.assignTenant = async (req, res) => {
             floor,
             bedNo: normalizedBedNo,
             moveInDate: moveInDate ? new Date(moveInDate) : null,
+            baseRoomRent: parseInt(req.body.baseRoomRent) || parseInt(agreedRent),
             agreedRent: parseInt(agreedRent),
             rentAgreementType,
             paymentFrequency,

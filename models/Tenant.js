@@ -19,6 +19,7 @@ const TenantSchema = new mongoose.Schema({
     
     // Rental Details
     moveInDate: { type: Date },
+    baseRoomRent: { type: Number },
     agreedRent: { type: Number },
     rentAgreementType: { type: String },
     paymentFrequency: { type: String },

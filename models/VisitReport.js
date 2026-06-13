@@ -17,6 +17,13 @@ const VisitReportSchema = new mongoose.Schema({
         description: { type: String }
     },
     
+    // Owner Information added by Employee
+    ownerInfo: {
+        name: { type: String },
+        email: { type: String },
+        phone: { type: String }
+    },
+    
     // Room/Occupancy Information
     roomInfo: {
         occupancy: { type: String }, // Single, Double, Triple, etc.

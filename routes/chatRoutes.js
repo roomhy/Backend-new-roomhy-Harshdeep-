@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const chatController = require('../controllers/chatController');
+const chatManagementController = require('../controllers/chatManagementController');
 const ChatRoom = require('../models/ChatRoom');
 const ChatMessage = require('../models/ChatMessage');
 
@@ -137,4 +138,43 @@ router.get('/unread/:room_id', chatController.getUnreadCount);
 router.delete('/message/:message_id', chatController.deleteMessage);
 router.delete('/delete-conversation', chatController.deleteConversation);
 
+// ─── ADMIN CHAT MANAGEMENT ───────────────────────────────────────────────
+
+// Moderation
+router.get('/admin/moderation', chatManagementController.getFlaggedMessages);
+router.put('/admin/moderation/:id/resolve', chatManagementController.resolveFlaggedMessage);
+router.get('/admin/moderation/:id/decrypt', chatManagementController.decryptMessage);
+
+// Templates
+router.get('/admin/templates', chatManagementController.getTemplates);
+router.post('/admin/templates', chatManagementController.createTemplate);
+router.put('/admin/templates/:id', chatManagementController.updateTemplate);
+router.delete('/admin/templates/:id', chatManagementController.deleteTemplate);
+
+// Settings
+router.get('/admin/settings', chatManagementController.getSettings);
+router.post('/admin/settings', chatManagementController.updateSettings);
+
+// Lead → Chat Funnel
+router.get('/admin/funnel', chatManagementController.getFunnel);
+router.get('/admin/leads', chatManagementController.getLeadMappings);
+router.post('/admin/leads/map', chatManagementController.mapLead);
+
+// Violations
+router.get('/admin/violations', chatManagementController.getViolations);
+router.post('/admin/violations/:id/resolve', chatManagementController.resolveViolation);
+
+// Booking Conversion Tracker
+router.get('/admin/booking-tracker', chatManagementController.getBookingTracker);
+
+// Analytics
+router.get('/admin/analytics', chatManagementController.getAnalytics);
+router.get('/admin/stagnant', chatManagementController.getStagnantChats);
+
+// Dispute Resolution
+router.get('/admin/disputes', chatManagementController.getDisputes);
+router.post('/admin/disputes', chatManagementController.createDispute);
+router.put('/admin/disputes/:id', chatManagementController.updateDispute);
+
 module.exports = router;
+

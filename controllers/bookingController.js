@@ -1490,6 +1490,46 @@ exports.confirmBooking = async (req, res) => {
 
         await booking.save();
 
+        // Create PaymentTransaction in DB using dynamic commission percentage
+        try {
+            const SystemSettings = require('../models/SystemSettings');
+            const PaymentTransaction = require('../models/PaymentTransaction');
+            
+            // Get setting
+            let settings = await SystemSettings.findOne();
+            let commPct = 10; // default
+            if (settings && typeof settings.commission_percentage === 'number') {
+                commPct = settings.commission_percentage;
+            }
+
+            const amt = Number(normalizedPaymentAmount || normalizedRent || 0);
+            const commAmt = Math.round((amt * commPct / 100) * 100) / 100;
+            const ownerAmt = Math.round((amt - commAmt) * 100) / 100;
+
+            await PaymentTransaction.create({
+                razorpay_payment_id: normalizedPaymentId,
+                razorpay_order_id: razorpay_order_id || null,
+                razorpay_signature: razorpay_signature || null,
+                booking_id: booking._id.toString(),
+                property_id: normalizedPropertyId,
+                property_name: normalizedPropertyName,
+                tenant_id: normalizedUserId,
+                tenant_name: normalizedName,
+                owner_id: finalOwnerId,
+                owner_name: finalOwnerName,
+                booking_amount: amt,
+                commission_percentage: commPct,
+                commission_amount: commAmt,
+                owner_amount: ownerAmt,
+                payout_status: 'Pending',
+                payment_method: normalizedPaymentMethod,
+                payment_date: new Date()
+            });
+            console.log('✅ Created PaymentTransaction for payment', normalizedPaymentId);
+        } catch (ptErr) {
+            console.error('⚠️ Failed to create PaymentTransaction:', ptErr.message);
+        }
+
         // Email notifications: tenant + owner + superadmin (booking confirmation / transaction)
         try {
             const paymentRef = normalizedPaymentId || 'N/A';

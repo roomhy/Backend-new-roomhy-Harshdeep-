@@ -1,7 +1,33 @@
 const mongoose = require('mongoose');
 
 const reviewSchema = new mongoose.Schema({
-  // Property reference (can be ObjectId or custom string like DELHI-PG-002)
+  // ─── BOOKING ELIGIBILITY FIELDS (Core Business Rule) ─────────────────────
+  // A review can only exist if booking is Confirmed AND move-in is Completed
+  bookingId: {
+    type: String,
+    required: [true, 'Booking ID is required for verified stay reviews'],
+    index: true
+  },
+  tenantId: {
+    type: String,
+    required: [true, 'Tenant ID is required'],
+    index: true
+  },
+  ownerId: {
+    type: String,
+    required: [true, 'Owner ID is required'],
+    index: true
+  },
+  moveInDate: {
+    type: Date,
+    default: null
+  },
+  reviewDate: {
+    type: Date,
+    default: Date.now
+  },
+
+  // ─── PROPERTY REFERENCE ──────────────────────────────────────────────────
   propertyId: {
     type: String,
     required: [true, 'Property ID is required'],
@@ -11,8 +37,12 @@ const reviewSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  
-  // User reference
+  propertyLocation: {
+    type: String,
+    default: ''
+  },
+
+  // ─── REVIEWER DETAILS ────────────────────────────────────────────────────
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -33,8 +63,8 @@ const reviewSchema = new mongoose.Schema({
     type: String,
     default: null
   },
-  
-  // Review content
+
+  // ─── REVIEW CONTENT ──────────────────────────────────────────────────────
   rating: {
     type: Number,
     required: [true, 'Rating is required'],
@@ -48,11 +78,9 @@ const reviewSchema = new mongoose.Schema({
     trim: true,
     maxlength: [1000, 'Review cannot exceed 1000 characters']
   },
-  
-  // Optional fields
   designation: {
     type: String,
-    default: 'Student',
+    default: 'Tenant',
     trim: true
   },
   location: {
@@ -60,9 +88,15 @@ const reviewSchema = new mongoose.Schema({
     default: '',
     trim: true
   },
-  
-  // Status
+
+  // ─── VERIFICATION ────────────────────────────────────────────────────────
+  isVerifiedStay: {
+    // TRUE only when booking.status=Confirmed AND move_in_status=Completed
+    type: Boolean,
+    default: false
+  },
   isVerified: {
+    // Legacy field kept for backward compat
     type: Boolean,
     default: false
   },
@@ -70,13 +104,44 @@ const reviewSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+
+  // ─── MODERATION ──────────────────────────────────────────────────────────
+  // Admin can ONLY: Approve / Reject / Hide — NEVER edit content
   status: {
     type: String,
-    enum: ['Active', 'Inactive', 'Pending'],
-    default: 'Active'
+    enum: ['Pending', 'Approved', 'Rejected', 'Hidden', 'Active', 'Inactive'],
+    default: 'Pending'
   },
-  
-  // Timestamps
+  moderationStatus: {
+    type: String,
+    enum: ['pending', 'flagged', 'approved', 'rejected', 'hidden', null],
+    default: 'pending'
+  },
+  moderationNotes: {
+    type: String,
+    default: ''
+  },
+  moderatedBy: {
+    type: String,
+    default: null
+  },
+  moderatedAt: {
+    type: Date,
+    default: null
+  },
+
+  // Automatic violation detection results
+  flaggedViolations: [{
+    type: String,
+    enum: ['spam', 'duplicate', 'abuse', 'fake', 'suspicious']
+  }],
+  flagSeverity: {
+    type: String,
+    enum: ['low', 'medium', 'high', null],
+    default: null
+  },
+
+  // ─── TIMESTAMPS ──────────────────────────────────────────────────────────
   createdAt: {
     type: Date,
     default: Date.now
@@ -87,77 +152,90 @@ const reviewSchema = new mongoose.Schema({
   }
 });
 
-// Update the updatedAt field before saving
+// ─── INDEXES ─────────────────────────────────────────────────────────────────
+reviewSchema.index({ propertyId: 1, tenantId: 1 }); // one review per booking enforced at API level
+reviewSchema.index({ moderationStatus: 1, createdAt: -1 });
+reviewSchema.index({ isVerifiedStay: 1, rating: -1 });
+reviewSchema.index({ createdAt: -1 });
+
+// ─── HOOKS ───────────────────────────────────────────────────────────────────
 reviewSchema.pre('save', function(next) {
   this.updatedAt = Date.now();
+  // Sync legacy field
+  if (this.isVerifiedStay) this.isVerified = true;
   next();
 });
 
-// Fields that must never leave the server on public endpoints
+// ─── STATIC METHODS ──────────────────────────────────────────────────────────
 const PUBLIC_REVIEW_FIELDS = '-email -userId';
 
-// Static method to get featured reviews
 reviewSchema.statics.getFeaturedReviews = function(limit = 6) {
-  return this.find({ isFeatured: true, status: 'Active' })
+  return this.find({ isFeatured: true, status: 'Approved', isVerifiedStay: true })
     .select(PUBLIC_REVIEW_FIELDS)
     .sort({ createdAt: -1 })
     .limit(limit);
 };
 
-// Static method to get recent reviews
 reviewSchema.statics.getRecentReviews = function(limit = 10) {
-  return this.find({ status: 'Active' })
+  return this.find({ status: 'Approved' })
     .select(PUBLIC_REVIEW_FIELDS)
     .sort({ createdAt: -1 })
     .limit(limit);
 };
 
-// Static method to get reviews by rating
 reviewSchema.statics.getReviewsByRating = function(minRating = 4, limit = 10) {
-  return this.find({ rating: { $gte: minRating }, status: 'Active' })
+  return this.find({ rating: { $gte: minRating }, status: 'Approved' })
     .select(PUBLIC_REVIEW_FIELDS)
     .sort({ rating: -1, createdAt: -1 })
     .limit(limit);
 };
 
-// Static method to get average rating
 reviewSchema.statics.getAverageRating = function() {
   return this.aggregate([
-    { $match: { status: 'Active' } },
+    { $match: { status: 'Approved' } },
     { $group: { _id: null, avgRating: { $avg: '$rating' }, totalReviews: { $sum: 1 } } }
   ]);
 };
 
-// Static method to get reviews for a specific property
 reviewSchema.statics.getPropertyReviews = function(propertyId, limit = 50) {
-  return this.find({ propertyId, status: 'Active' })
+  return this.find({ propertyId, status: 'Approved' })
     .select(PUBLIC_REVIEW_FIELDS)
     .sort({ createdAt: -1 })
     .limit(limit);
 };
 
-// Static method to get average rating for a specific property
 reviewSchema.statics.getPropertyAverageRating = function(propertyId) {
   return this.aggregate([
-    { $match: { propertyId: propertyId, status: 'Active' } },
-    { 
-      $group: { 
-        _id: null, 
-        avgRating: { $avg: '$rating' }, 
+    { $match: { propertyId, status: 'Approved' } },
+    {
+      $group: {
+        _id: null,
+        avgRating: { $avg: '$rating' },
         totalReviews: { $sum: 1 },
         rating5: { $sum: { $cond: [{ $eq: ['$rating', 5] }, 1, 0] } },
         rating4: { $sum: { $cond: [{ $eq: ['$rating', 4] }, 1, 0] } },
         rating3: { $sum: { $cond: [{ $eq: ['$rating', 3] }, 1, 0] } },
         rating2: { $sum: { $cond: [{ $eq: ['$rating', 2] }, 1, 0] } },
         rating1: { $sum: { $cond: [{ $eq: ['$rating', 1] }, 1, 0] } }
-      } 
+      }
     }
   ]);
 };
 
-// Static method to check if user has already reviewed a property
 reviewSchema.statics.hasUserReviewed = function(propertyId, userId) {
-  return this.findOne({ propertyId, userId, status: 'Active' });
+  return this.findOne({ propertyId, userId, status: { $in: ['Approved', 'Pending'] } });
+};
+
+// NEW: Check if tenant is eligible to review (booking confirmed + moved in)
+reviewSchema.statics.checkEligibility = async function(tenantId, bookingId) {
+  const BookingRequest = require('./BookingRequest');
+  const booking = await BookingRequest.findOne({ _id: bookingId });
+  if (!booking) return { eligible: false, reason: 'Booking not found' };
+  if (booking.user_id !== tenantId && booking.userId !== tenantId) return { eligible: false, reason: 'Tenant does not match booking' };
+  if (!['confirmed', 'active', 'completed'].includes(booking.booking_status?.toLowerCase())) return { eligible: false, reason: 'Booking is not confirmed' };
+  const existing = await this.findOne({ bookingId, tenantId });
+  if (existing) return { eligible: false, reason: 'Review already submitted for this booking' };
+  return { eligible: true };
 };
 
 module.exports = mongoose.model('Review', reviewSchema);
