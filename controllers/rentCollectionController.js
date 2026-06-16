@@ -442,7 +442,7 @@ async function listPaymentsHandler(req, res) {
     const payments = await RentPayment.find({ ownerId })
       .sort({ paymentDate: -1 })
       .limit(limit)
-      .populate('tenantId', 'name roomNo phone email')
+      .populate('tenantId', 'name roomNo phone email propertyId')
       .populate('invoiceId', 'billingMonth invoiceNumber rentAmount electricityBill totalPenalty totalDue')
       .lean();
 
@@ -453,6 +453,7 @@ async function listPaymentsHandler(req, res) {
       roomNo:         p.tenantId?.roomNo  || '—',
       tenantPhone:    p.tenantId?.phone   || '',
       tenantEmail:    p.tenantId?.email   || '',
+      propertyId:     p.tenantId?.propertyId || '',
       amount:         p.amount,
       paymentMethod:  p.paymentMethod,
       paymentDate:    p.paymentDate,
@@ -469,7 +470,51 @@ async function listPaymentsHandler(req, res) {
       status:         'received',
     }));
 
-    res.json({ success: true, payments: shaped });
+    // Fetch and merge PaymentTransaction (online bookings)
+    const PaymentTransaction = require('../models/PaymentTransaction');
+    const BookingRequest = require('../models/BookingRequest');
+    const ownerLoginId = req.user.loginId;
+    let txs = [];
+    if (ownerLoginId) {
+      txs = await PaymentTransaction.find({ owner_id: ownerLoginId.toUpperCase() }).lean();
+    }
+
+    const bookingIds = txs.map(t => t.booking_id).filter(Boolean);
+    const bkRequests = await BookingRequest.find({ _id: { $in: bookingIds } }).lean();
+    const bkMap = new Map(bkRequests.map(b => [b._id.toString(), b]));
+
+    const shapedTxs = txs.map(t => {
+      const bkObj = t.booking_id ? bkMap.get(t.booking_id.toString()) : null;
+      return {
+        _id:            t._id,
+        transactionId:  t.razorpay_payment_id || t._id.toString().slice(-8).toUpperCase(),
+        tenantName:     t.tenant_name || bkObj?.name || '—',
+        roomNo:         '—',
+        tenantPhone:    bkObj?.phone || '',
+        tenantEmail:    bkObj?.email || '',
+        propertyId:     t.property_id || bkObj?.property_id || '',
+        amount:         t.owner_amount,
+        paymentMethod:  t.payment_method || 'online',
+        paymentDate:    t.payment_date || t.created_at,
+        isPartial:      false,
+        remainingAfter: 0,
+        notes:          t.notes || 'Booking Payment',
+        invoiceId:      null,
+        billingMonth:   t.payment_date ? new Date(t.payment_date).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '',
+        invoiceNumber:  t.razorpay_payment_id || '—',
+        rentAmount:     t.owner_amount,
+        electricityBill: 0,
+        totalPenalty:   0,
+        totalDue:       t.owner_amount,
+        status:         t.payout_status === 'Paid' ? 'received' : 'pending_payout',
+      };
+    });
+
+    const merged = [...shaped, ...shapedTxs]
+      .sort((a, b) => new Date(b.paymentDate) - new Date(a.paymentDate))
+      .slice(0, limit);
+
+    res.json({ success: true, payments: merged });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

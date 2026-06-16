@@ -103,7 +103,7 @@ module.exports = (io) => {
           _id: msg._id,
           sender_login_id: from_login_id,
           sender_name: socket.userName,
-          message: message.trim(),
+          message: msg.message,
           created_at: msg.created_at
         });
 

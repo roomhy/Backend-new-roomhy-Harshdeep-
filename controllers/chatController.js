@@ -84,6 +84,8 @@ exports.getInbox = async (req, res) => {
     // Enhance participants with real details from multiple sources
     const websiteEnquiries = await WebsiteEnquiry.find({}).lean();
     const owners = await Owner.find({}).lean();
+    const bookings = await BookingRequest.find({}).lean();
+    const users = await User.find({}).lean();
 
     for (const item of summaryMap.values()) {
         const pid = item.participant_login_id;
@@ -99,8 +101,26 @@ exports.getInbox = async (req, res) => {
             match = owners.find(o => o.loginId === pid);
         }
 
+        // Try to match with BookingRequest (Website tenant)
+        let bookingMatch = null;
+        if (!match) {
+            bookingMatch = bookings.find(b => {
+                const genId = generateWebsiteUserIdFromEmail(b.email);
+                return (genId && genId === pid) || b.user_id === pid || b.email === pid;
+            });
+        }
+
+        // Try to match with User directly
+        let userMatch = null;
+        if (!match && !bookingMatch) {
+            userMatch = users.find(u => {
+                const genId = generateWebsiteUserIdFromEmail(u.email);
+                return (genId && genId === pid) || u.loginId === pid || u.email === pid;
+            });
+        }
+
         // 3. Try matching by NAME (Fuzzy match for website users)
-        if (!match && currentName && currentName !== pid) {
+        if (!match && !bookingMatch && !userMatch && currentName && currentName !== pid) {
             const searchName = currentName.toLowerCase().trim();
             match = websiteEnquiries.find(enq => (enq.owner_name || "").toLowerCase().trim() === searchName) ||
                     owners.find(o => (o.name || "").toLowerCase().trim() === searchName);
@@ -115,6 +135,20 @@ exports.getInbox = async (req, res) => {
             item.participant_phone = match.owner_phone || match.phone || item.participant_phone;
             item.participant_property = match.property_name || item.participant_property;
             item.participant_city = match.city || item.participant_city;
+        } else if (bookingMatch) {
+            if (!item.participant_name || item.participant_name === pid) {
+                item.participant_name = bookingMatch.name || item.participant_name;
+            }
+            item.participant_email = bookingMatch.email || item.participant_email;
+            item.participant_phone = bookingMatch.phone || item.participant_phone;
+            item.participant_property = bookingMatch.property_name || item.participant_property;
+            item.participant_city = bookingMatch.city || item.participant_city;
+        } else if (userMatch) {
+            if (!item.participant_name || item.participant_name === pid) {
+                item.participant_name = userMatch.fullName || userMatch.name || `${userMatch.firstName || ''} ${userMatch.lastName || ''}`.trim() || item.participant_name;
+            }
+            item.participant_email = userMatch.email || item.participant_email;
+            item.participant_phone = userMatch.phone || item.participant_phone;
         }
     }
 
@@ -284,6 +318,21 @@ exports.sendMessage = async (req, res) => {
     });
 
     await msg.save();
+
+    // Check if this message is a payment link and update booking funnel
+    if (message.includes('/website/pay?bookingId=')) {
+      try {
+        const bookingIdMatch = message.match(/bookingId=([a-f0-9]{24})/i);
+        if (bookingIdMatch && bookingIdMatch[1]) {
+          await BookingRequest.findByIdAndUpdate(bookingIdMatch[1], {
+            payment_link_sent_at: new Date()
+          });
+          console.log('✅ Updated booking payment_link_sent_at for', bookingIdMatch[1]);
+        }
+      } catch (bErr) {
+        console.error('⚠️ Failed to update booking payment_link_sent_at:', bErr.message);
+      }
+    }
 
     // If we had access to IO here, we would emit. 
     // For now, saving to DB is enough as the chat page fetches on load.

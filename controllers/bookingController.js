@@ -861,14 +861,22 @@ exports.updateBookingStatus = async (req, res) => {
  */
 exports.approveBooking = async (req, res) => {
     try {
+        const approvedAmount = req.body?.approved_amount || req.body?.approvedAmount || req.body?.amount;
+        const updateData = {
+            status: 'confirmed',
+            booking_status: 'confirmed',
+            bookingStatus: 'confirmed',
+            updated_at: Date.now()
+        };
+        if (approvedAmount) {
+            updateData.rent_amount = Number(approvedAmount);
+            updateData.total_amount = Number(approvedAmount);
+            updateData.price = Number(approvedAmount);
+        }
+
         const request = await BookingRequest.findByIdAndUpdate(
             req.params.id,
-            {
-                status: 'confirmed',
-                booking_status: 'confirmed',
-                bookingStatus: 'confirmed',
-                updated_at: Date.now()
-            },
+            updateData,
             { new: true }
         );
 
@@ -925,15 +933,15 @@ exports.approveBooking = async (req, res) => {
                 `;
                 const text = `Your bid for ${propertyName} has been accepted by ${ownerName}.`;
                 if (request.email) {
-                    await mailer.sendMail(request.email, subject, text, html);
+                    mailer.sendMail(request.email, subject, text, html).catch(err => console.error('Background bid email failed:', err.message));
                 }
             } else {
-                await sendBookingAcceptanceEmail(
+                sendBookingAcceptanceEmail(
                     request.email,
                     tenantName,
                     propertyName,
                     ownerName
-                );
+                ).catch(err => console.error('Background acceptance email failed:', err.message));
             }
             chat = await ensureChatRoomsForBooking({
                 bookingId: String(request._id || ''),
@@ -945,9 +953,29 @@ exports.approveBooking = async (req, res) => {
                 propertyName
             });
 
-            // Create in-app notification
+            // Send automatic welcome message to tenant's room from owner
+            if (chat && chat.userRoomId) {
+                try {
+                    const welcomeMsg = `Hello ${tenantName}! 👋 I have reviewed and accepted your request for "${propertyName}". 🏠 I have enabled chat for our conversation so we can discuss the next steps and move-in details. Looking forward to hosting you!`;
+                    await ChatMessage.create({
+                        room_id: chat.userRoomId,
+                        sender_login_id: String(request.owner_id || '').toUpperCase(),
+                        sender_name: ownerName,
+                        sender_role: 'property_owner',
+                        message: welcomeMsg,
+                        message_type: 'text',
+                        created_at: new Date(),
+                        updated_at: new Date()
+                    });
+                    console.log('✅ Automated chat welcome message sent to', chat.userRoomId);
+                } catch (chatMsgErr) {
+                    console.error('⚠️ Failed to send automated welcome chat message:', chatMsgErr.message);
+                }
+            }
+
+            // Create in-app notification in background
             const notificationEndpoint = `${process.env.API_URL || 'https://api.roomhy.com'}/api/website-enquiry/notifications/create`;
-            await fetch(notificationEndpoint, {
+            fetch(notificationEndpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -960,16 +988,12 @@ exports.approveBooking = async (req, res) => {
                 })
             }).catch(err => console.log('Notification API call failed:', err.message));
 
-            try {
-                await sendTemplateToResolvedUser({
-                    email: request.email || '',
-                    userId: request.user_id || '',
-                    templateName: 'roomhy_booking_approved',
-                    variables: [tenantName, propertyName]
-                });
-            } catch (whatsAppErr) {
-                console.warn('booking approved whatsapp failed:', whatsAppErr.message);
-            }
+            sendTemplateToResolvedUser({
+                email: request.email || '',
+                userId: request.user_id || '',
+                templateName: 'roomhy_booking_approved',
+                variables: [tenantName, propertyName]
+            }).catch(whatsAppErr => console.warn('booking approved whatsapp failed:', whatsAppErr.message));
 
             // Agreement sending disabled
             // try {
@@ -978,7 +1002,7 @@ exports.approveBooking = async (req, res) => {
             //     console.warn('owner agreement creation failed:', formatErrorDetails(agreementErr));
             // }
         } catch (emailErr) {
-            console.error('Error sending approval email:', emailErr);
+            console.error('Error in approval notification flow:', emailErr);
         }
 
         res.status(200).json({ 
@@ -2028,6 +2052,140 @@ exports.processRefundPayment = async (req, res) => {
 
     } catch (error) {
         console.error('Error processing refund payment:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+/**
+ * CONFIRM PAYMENT
+ * Updates booking request status to confirmed and creates a PaymentTransaction to credit admin wallet.
+ */
+exports.confirmPayment = async (req, res) => {
+    try {
+        const { bookingId, paymentId, orderId, signature, amount } = req.body;
+
+        if (!bookingId || !paymentId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Missing required fields: bookingId, paymentId'
+            });
+        }
+
+        const BookingRequest = require('../models/BookingRequest');
+        const SystemSettings = require('../models/SystemSettings');
+        const PaymentTransaction = require('../models/PaymentTransaction');
+
+        const booking = await BookingRequest.findById(bookingId);
+        if (!booking) {
+            return res.status(404).json({
+                success: false,
+                message: 'Booking request not found'
+            });
+        }
+
+        // Update booking request status to confirmed and completed payment
+        booking.status = 'confirmed';
+        booking.booking_status = 'confirmed';
+        booking.bookingStatus = 'confirmed';
+        booking.payment_id = paymentId;
+        booking.paymentId = paymentId;
+        booking.payment_amount = Number(amount || booking.rent_amount || 0);
+        booking.payment_status = 'completed';
+        booking.payment_completed_at = new Date();
+        booking.booking_confirmed_at = new Date();
+        booking.updated_at = Date.now();
+
+        await booking.save();
+
+// Notify property owner about payment completion
+const ownerId = booking.owner_id;
+let ownerEmail = '';
+if (ownerId) {
+    const ownerUser = await User.findOne({ loginId: String(ownerId).toUpperCase() }).lean();
+    const ownerRecord = await Owner.findOne({ loginId: String(ownerId).toUpperCase() }).lean();
+    ownerEmail = (ownerUser && ownerUser.email) || (ownerRecord && ownerRecord.email) || (ownerRecord && ownerRecord.profile && ownerRecord.profile.email) || '';
+    // Send email notification to owner
+    if (ownerEmail) {
+        const subject = `Payment Received by Superadmin for ${booking.property_name || ''}`;
+        const html = `
+            <div style="font-family: Arial, sans-serif; font-size: 14px;">
+                <h2>Payment Received by Superadmin</h2>
+                <p>Dear Owner,</p>
+                <p>The tenant <strong>${booking.name || ''}</strong> has completed the payment of <strong>INR ${booking.payment_amount || 0}</strong> for the property <strong>${booking.property_name || ''}</strong>.</p>
+                <p>This payment has gone to Superadmin. Once the tenant moves in, the amount will be transferred to you.</p>
+                <p>You can now onboard/add this tenant and assign them a room.</p>
+                <p>Booking ID: ${booking._id.toString()}</p>
+            </div>`;
+        await mailer.sendMail(ownerEmail, subject, '', html);
+    }
+    // Create in-app notification for owner
+    await Notification.create({
+        toLoginId: String(ownerId).toUpperCase(),
+        toRole: 'owner',
+        from: 'system',
+        type: 'payment', // Set to payment for UI routing
+        meta: { 
+            bookingId: booking._id.toString(), 
+            amount: booking.payment_amount || 0,
+            tenantName: booking.name || '',
+            tenantEmail: booking.email || '',
+            tenantPhone: booking.phone || '',
+            propertyId: booking.property_id || '',
+            title: 'Payment Received by Superadmin',
+            message: `Tenant ${booking.name || ''} has paid INR ${booking.payment_amount || 0}. The payment has gone to Superadmin. Once the tenant moves in, the payment will be transferred to you, so you can now add the tenant.`
+        },
+        read: false
+    });
+}
+
+// Create PaymentTransaction in DB using dynamic commission percentage
+
+        // Create PaymentTransaction in DB using dynamic commission percentage
+        try {
+            let settings = await SystemSettings.findOne();
+            let commPct = 10; // default
+            if (settings && typeof settings.commission_percentage === 'number') {
+                commPct = settings.commission_percentage;
+            }
+
+            const amt = Number(amount || booking.rent_amount || 0);
+            const commAmt = Math.round((amt * commPct / 100) * 100) / 100;
+            const ownerAmt = Math.round((amt - commAmt) * 100) / 100;
+
+            await PaymentTransaction.create({
+                razorpay_payment_id: paymentId,
+                razorpay_order_id: orderId || null,
+                razorpay_signature: signature || null,
+                booking_id: booking._id.toString(),
+                property_id: booking.property_id,
+                property_name: booking.property_name || '',
+                tenant_id: booking.user_id,
+                tenant_name: booking.name || '',
+                owner_id: String(booking.owner_id || '').toUpperCase(),
+                owner_name: booking.owner_name || 'Property Owner',
+                booking_amount: amt,
+                commission_percentage: commPct,
+                commission_amount: commAmt,
+                owner_amount: ownerAmt,
+                payout_status: 'Pending',
+                payment_method: 'razorpay',
+                payment_date: new Date()
+            });
+            console.log('✅ Created PaymentTransaction for payment', paymentId);
+        } catch (ptErr) {
+            console.error('⚠️ Failed to create PaymentTransaction:', ptErr.message);
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Payment confirmed and booking updated successfully',
+            data: booking
+        });
+    } catch (error) {
+        console.error('Error confirming payment:', error);
         res.status(500).json({
             success: false,
             message: error.message

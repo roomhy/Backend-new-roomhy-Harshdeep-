@@ -660,7 +660,14 @@ exports.login = async (req, res) => {
 
             // Check if tenant is inactive/deleted/suspended
             if (user.role === 'tenant') {
-                const tenant = await Tenant.findOne({ loginId: user.loginId });
+                const tenant = await Tenant.findOne({
+                    $or: [
+                        { loginId: user.loginId },
+                        { email: user.email },
+                        { phone: user.phone },
+                        { user: user._id }
+                    ]
+                });
                 if (!tenant || tenant.status === 'inactive' || tenant.status === 'suspended' || tenant.isDeleted) {
                     return res.status(403).json({ message: 'Account disabled/inactive' });
                 }
@@ -668,7 +675,13 @@ exports.login = async (req, res) => {
 
             // Check if owner is inactive/deleted/deactivated
             if (user.role === 'owner') {
-                const owner = await Owner.findOne({ loginId: user.loginId });
+                const owner = await Owner.findOne({
+                    $or: [
+                        { loginId: user.loginId },
+                        { email: user.email },
+                        { phone: user.phone }
+                    ]
+                });
                 if (!owner || owner.status === 'inactive' || owner.isActive === false || owner.isDeleted) {
                     return res.status(403).json({ message: 'Account disabled/inactive' });
                 }

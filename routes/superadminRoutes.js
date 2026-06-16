@@ -829,23 +829,56 @@ router.get('/revenue/transactions', async (req, res) => {
     }));
 
     // Format Payouts table rows
-    const payouts = txs.map(t => ({
-      id: t._id,
-      razorpay_payment_id: t.razorpay_payment_id || 'N/A',
-      owner_id: t.owner_id,
-      owner_name: t.owner_name || 'N/A',
-      owner_amount: t.owner_amount,
-      payout_status: t.payout_status,
-      payout_reference: t.payout_reference,
-      payout_date: t.payout_date ? t.payout_date.toISOString().split('T')[0] : null,
-      payout_initiated_by: t.payout_initiated_by,
-      bank_details: {
-        account_holder: t.payout_account_holder,
-        account_number: t.payout_account_number,
-        ifsc_code: t.payout_ifsc_code,
-        bank_name: t.payout_bank_name
-      }
-    }));
+    const Owner = require('../models/Owner');
+    const BookingRequest = require('../models/BookingRequest');
+    const Tenant = require('../models/Tenant');
+
+    const owners = await Owner.find({}).lean();
+    
+    // Fetch bookings and tenants in bulk to optimize mapping
+    const bookingIds = txs.map(t => t.booking_id).filter(Boolean);
+    const bookings = await BookingRequest.find({ _id: { $in: bookingIds } }).lean();
+    const tenants = await Tenant.find({ isDeleted: { $ne: true } }).lean();
+
+    const payouts = txs.map(t => {
+      const ownerDoc = owners.find(o => String(o.loginId || '').toUpperCase() === String(t.owner_id || '').toUpperCase());
+      const accNumber = t.payout_account_number || ownerDoc?.profile?.accountNumber || ownerDoc?.accountNumber || null;
+      const ifsc = t.payout_ifsc_code || ownerDoc?.profile?.ifscCode || ownerDoc?.ifscCode || null;
+      const bank = t.payout_bank_name || ownerDoc?.profile?.bankName || ownerDoc?.bankName || null;
+      const holder = t.payout_account_holder || ownerDoc?.profile?.name || ownerDoc?.name || null;
+
+      // Find matching booking
+      const bookingDoc = bookings.find(b => String(b._id) === String(t.booking_id));
+      
+      // Find matching tenant by ID, email, or phone
+      const tenantDoc = tenants.find(ten => 
+        (bookingDoc && ten.email && String(ten.email).toLowerCase() === String(bookingDoc.email).toLowerCase()) ||
+        (bookingDoc && ten.phone && String(ten.phone) === String(bookingDoc.phone)) ||
+        (String(ten.user) === String(t.tenant_id)) ||
+        (String(ten._id) === String(t.tenant_id))
+      );
+
+      const resolvedMoveInDate = tenantDoc?.moveInDate || bookingDoc?.check_in_date || bookingDoc?.checkInDate || null;
+
+      return {
+        id: t._id,
+        razorpay_payment_id: t.razorpay_payment_id || 'N/A',
+        owner_id: t.owner_id,
+        owner_name: t.owner_name || 'N/A',
+        owner_amount: t.owner_amount,
+        payout_status: t.payout_status,
+        payout_reference: t.payout_reference,
+        payout_date: t.payout_date ? t.payout_date.toISOString().split('T')[0] : null,
+        payout_initiated_by: t.payout_initiated_by,
+        moveInDate: resolvedMoveInDate ? new Date(resolvedMoveInDate).toISOString().split('T')[0] : null,
+        bank_details: {
+          account_holder: holder,
+          account_number: accNumber,
+          ifsc_code: ifsc,
+          bank_name: bank
+        }
+      };
+    });
 
     res.json({
       success: true,

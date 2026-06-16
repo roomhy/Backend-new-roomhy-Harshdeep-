@@ -464,7 +464,8 @@ exports.assignTenant = async (req, res) => {
                 agreedRent: tenant.agreedRent,
                 securityDepositTotal: tenant.securityDepositTotal,
                 securityDepositPaid: tenant.securityDepositPaid,
-                securityDepositBalance: tenant.securityDepositBalance
+                securityDepositBalance: tenant.securityDepositBalance,
+                depositAmount: tenant.securityDepositTotal
             },
             tenantCheckinLink
         });

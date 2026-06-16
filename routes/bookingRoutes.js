@@ -121,8 +121,11 @@ router.get('/requests', bookingController.getBookingRequests);
 // Get user bookings (tenant's mystays page) - MUST BE BEFORE /requests/:id route
 router.get('/user/:userId', bookingController.getUserBookings);
 
-// Confirm booking from booking form (save all tenant data) - MUST BE BEFORE /:id route
+// Confirm booking from booking form (save all tenant data) - MUST BE BEFORE /requests/:id route
 router.post('/confirm', bookingController.confirmBooking);
+
+// Confirm payment from payment page (update booking request status and add payment transaction)
+router.post('/payment/confirm', bookingController.confirmPayment);
 
 // ================== REFUND REQUEST ROUTES (BEFORE generic /:id route) ==================
 

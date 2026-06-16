@@ -320,9 +320,43 @@ exports.getOwnerTenants = async (req, res) => {
 // Get rent collected for an owner
 exports.getOwnerRent = async (req, res) => {
     try {
-        const ownerLoginId = req.params.loginId;
-        const enquiries = await require('../models/Enquiry').find({ ownerLoginId, status: { $in: ['accepted', 'approved'] } }).lean();
-        const totalRent = enquiries.reduce((sum, e) => sum + (e.paidAmount || 0), 0);
+        const ownerLoginId = String(req.params.loginId || '').trim().toUpperCase();
+        
+        // Find properties owned by this owner
+        const Property = require('../models/Property');
+        const properties = await Property.find({ ownerLoginId, isDeleted: { $ne: true } }).select('_id');
+        const propertyIds = properties.map(p => p._id);
+
+        // 1. Find enquiries for these properties that are accepted/approved
+        const enquiries = await require('../models/Enquiry').find({
+            $or: [
+                { propertyId: { $in: propertyIds } },
+                { ownerLoginId }
+            ],
+            status: { $in: ['accepted', 'approved', 'active'] }
+        }).lean();
+        const enquiriesTotal = enquiries.reduce((sum, e) => sum + (e.paidAmount || 0), 0);
+
+        // 2. Find online booking payment transactions (PaymentTransaction)
+        const PaymentTransaction = require('../models/PaymentTransaction');
+        const transactions = await PaymentTransaction.find({
+            owner_id: ownerLoginId
+        }).select('owner_amount');
+        const txTotal = transactions.reduce((sum, t) => sum + (t.owner_amount || 0), 0);
+
+        // 3. Find monthly rent invoice payments (RentPayment)
+        const RentPayment = require('../models/RentPayment');
+        const Owner = require('../models/Owner');
+        const ownerDoc = await Owner.findOne({ loginId: ownerLoginId });
+        let rentPaymentsTotal = 0;
+        if (ownerDoc) {
+            const rentPayments = await RentPayment.find({
+                ownerId: ownerDoc._id
+            }).select('amount');
+            rentPaymentsTotal = rentPayments.reduce((sum, r) => sum + (r.amount || 0), 0);
+        }
+
+        const totalRent = enquiriesTotal + txTotal + rentPaymentsTotal;
         res.json({ totalRent });
     } catch (err) {
         res.status(500).json({ message: err.message });

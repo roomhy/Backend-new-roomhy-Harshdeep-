@@ -4,6 +4,38 @@ const Notification = require('../models/Notification');
 const User = require('../models/user');
 
 // Owner adds a room to their property. Room is created with status 'inactive'.
+exports.sendPaymentLink = async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    if (!roomId) return res.status(400).json({ success: false, message: 'Room ID required' });
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(roomId)) {
+      return res.status(400).json({ success: false, message: 'Invalid Room ID format' });
+    }
+    const room = await Room.findById(roomId).lean();
+    if (!room) return res.status(404).json({ success: false, message: 'Room not found' });
+    // Attempt to locate tenant assigned to this room
+    const Tenant = require('../models/Tenant');
+    let tenant = null;
+    if (Array.isArray(room.bedAssignments) && room.bedAssignments.length) {
+      const occupied = room.bedAssignments.find(b => b && b.tenantId);
+      if (occupied) tenant = await Tenant.findById(occupied.tenantId).lean();
+    }
+    if (!tenant) {
+      tenant = await Tenant.findOne({ room: roomId, status: { $in: ['active', 'pending'] } }).lean();
+    }
+    if (!tenant) {
+      return res.status(404).json({ success: false, message: 'No tenant assigned to this room' });
+    }
+    const baseUrl = process.env.APP_BASE_URL || process.env.FRONTEND_URL || 'https://app.roomhy.com';
+    const paymentLink = `${baseUrl}/pay?roomId=${roomId}&tenantId=${tenant._id}`;
+    return res.json({ success: true, paymentLink });
+  } catch (err) {
+    console.error('sendPaymentLink error:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
 exports.createRoom = async (req, res) => {
     try {
         const propertyId = req.body.propertyId || req.body.property;
@@ -48,11 +80,11 @@ exports.createRoom = async (req, res) => {
             status: 'inactive'
         });
 
-        // Notify superadmins and area manager
+        // Notify superadmins and owner
         try {
             const notifications = [];
             const superAdmins = await User.find({ role: 'superadmin' }).lean();
-            superAdmins.forEach((sa) => notifications.push(Notification.create({
+            superAdmins.forEach(sa => notifications.push(Notification.create({
                 toRole: 'superadmin',
                 toLoginId: sa.loginId || '',
                 from: String(user.loginId || user._id || 'owner'),
@@ -90,6 +122,9 @@ exports.createRoom = async (req, res) => {
     }
 };
 
+
+
+
 const mongoose = require('mongoose');
 
 exports.getRoomsByProperty = async (req, res) => {
@@ -123,6 +158,27 @@ exports.getRoomsByProperty = async (req, res) => {
         }
         
         let rooms = await roomsQuery.lean();
+// Fallback generation: if no rooms found, generate from property roomTypes
+if (rooms.length === 0) {
+    const selectedProp = await Property.findById(propertyId).lean();
+    if (selectedProp && Array.isArray(selectedProp.roomTypes)) {
+        selectedProp.roomTypes.forEach(rt => {
+            const count = parseInt(rt.totalRooms) || 0;
+            const bedsCount = parseInt(rt.occupancy) || parseInt(rt.totalBeds) || 1;
+            const priceVal = Number(rt.pricePerBed || rt.pricePerRoom || 0);
+            for (let i = 1; i <= count; i++) {
+                rooms.push({
+                    _id: `${rt.type}-${i}`,
+                    title: `${rt.type} - Room ${i}`,
+                    type: rt.type,
+                    beds: bedsCount,
+                    price: priceVal,
+                    property: propertyId
+                });
+            }
+        });
+    }
+}
 
         if (unassigned === 'true') {
             const Tenant = require('../models/Tenant');

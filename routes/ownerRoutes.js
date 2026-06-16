@@ -270,13 +270,35 @@ router.get('/:loginId/rent', async (req, res) => {
         const properties = await Property.find({ ownerLoginId: loginId, isDeleted: { $ne: true } }).select('_id');
         const propertyIds = properties.map(p => p._id);
 
-        // Find enquiries for these properties that are accepted/approved
+        // 1. Find enquiries for these properties that are accepted/approved
         const enquiries = await Enquiry.find({
-            propertyId: { $in: propertyIds },
-            status: { $in: ['accepted', 'approved'] }
+            $or: [
+                { propertyId: { $in: propertyIds } },
+                { ownerLoginId: loginId }
+            ],
+            status: { $in: ['accepted', 'approved', 'active'] }
         }).select('paidAmount');
+        const enquiriesTotal = enquiries.reduce((sum, e) => sum + (e.paidAmount || 0), 0);
 
-        const totalRent = enquiries.reduce((sum, e) => sum + (e.paidAmount || 0), 0);
+        // 2. Find online booking payment transactions (PaymentTransaction)
+        const PaymentTransaction = require('../models/PaymentTransaction');
+        const transactions = await PaymentTransaction.find({
+            owner_id: loginId
+        }).select('owner_amount');
+        const txTotal = transactions.reduce((sum, t) => sum + (t.owner_amount || 0), 0);
+
+        // 3. Find monthly rent invoice payments (RentPayment)
+        const RentPayment = require('../models/RentPayment');
+        const ownerDoc = await Owner.findOne({ loginId });
+        let rentPaymentsTotal = 0;
+        if (ownerDoc) {
+            const rentPayments = await RentPayment.find({
+                ownerId: ownerDoc._id
+            }).select('amount');
+            rentPaymentsTotal = rentPayments.reduce((sum, r) => sum + (r.amount || 0), 0);
+        }
+
+        const totalRent = enquiriesTotal + txTotal + rentPaymentsTotal;
         return res.json({ totalRent });
     } catch (err) {
         console.error('❌ Error fetching owner rent:', err.message);
