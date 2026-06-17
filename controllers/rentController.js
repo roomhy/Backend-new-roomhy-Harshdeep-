@@ -477,6 +477,220 @@ exports.sendDelayedPaymentReminder = async (req, res) => {
     }
 };
 
+// Helper to generate the premium HTML template for rent reminders
+function buildRentReminderEmailHtml(rent, phase, daysOverdue, ownerInfo) {
+    const isPhase1 = phase === 1;
+    const isPhase2 = phase === 2;
+    const isPhase3 = phase === 3;
+
+    const headerColor  = isPhase1 ? '#2563eb' : isPhase2 ? '#d97706' : '#dc2626';
+    const badgeColor   = isPhase1 ? '#dbeafe' : isPhase2 ? '#fef3c7' : '#fee2e2';
+    const badgeText    = isPhase1 ? '#1d4ed8' : isPhase2 ? '#92400e' : '#991b1b';
+    const badgeLabel   = isPhase1 ? 'Phase 1 — Friendly Reminder' : isPhase2 ? 'Phase 2 — Penalty Applied' : 'Phase 3 — Final Notice';
+
+    const greeting     = isPhase1
+      ? `Your rent for <strong>${rent.collectionMonth || 'this month'}</strong> is due. Please pay at the earliest to avoid late penalties.`
+      : isPhase2
+      ? `Your rent for <strong>${rent.collectionMonth || 'this month'}</strong> is overdue. A late penalty has been added to your balance.`
+      : `Your rent for <strong>${rent.collectionMonth || 'this month'}</strong> remains unpaid. This is a <strong>final notice</strong>. Continued non-payment may result in further action.`;
+
+    const penaltyAmount = Math.max(0, (rent.totalDue || 0) - (rent.rentAmount || 0));
+    const penaltyRow = isPhase1 ? '' : `
+        <tr>
+          <td style="padding:10px 14px;border-bottom:1px solid #f0f0f0;color:#555;font-size:14px">Late Penalty</td>
+          <td style="padding:10px 14px;border-bottom:1px solid #f0f0f0;color:#dc2626;font-weight:600;font-size:14px;text-align:right">₹${penaltyAmount || 0}</td>
+        </tr>`;
+
+    // Static warning for electricity as Rent model does not separate it
+    const electricityRow = `<tr>
+          <td colspan="2" style="padding:10px 14px;border-bottom:1px solid #f0f0f0;color:#b45309;font-size:12px;font-weight:500;text-align:left">⚡ Electricity reading not yet submitted - bill will be updated once entered</td>
+        </tr>`;
+
+    const footerMessage = isPhase1
+      ? 'Kindly clear your dues to avoid penalties.'
+      : isPhase2
+      ? 'Please pay immediately to prevent further penalties.'
+      : 'Settle your outstanding balance now to avoid legal escalation.';
+
+    const appBaseUrl = (process.env.APP_BASE_URL || 'https://app.roomhy.com').replace(/\/$/, '');
+    const dashboardUrl = `${appBaseUrl}/tenant/tenantdashboard`;
+    const onlinePayUrl = `${dashboardUrl}?pay=online`;
+    const cashPayUrl = `${dashboardUrl}?pay=cash`;
+
+    const { ownerUpiId, ownerBankName, ownerAccountHolder, ownerAccountNumber, ownerIfscCode } = ownerInfo;
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    .button {
+      background-color: ${headerColor};
+      color: white !important;
+      padding: 10px 20px;
+      text-decoration: none;
+      border-radius: 4px;
+      display: inline-block;
+      font-weight: bold;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body style="margin:0;padding:0;background:#f4f4f5;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5;padding:32px 16px">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08)">
+
+        <!-- Header -->
+        <tr>
+          <td style="background:${headerColor};padding:28px 32px">
+            <p style="margin:0;color:rgba(255,255,255,0.85);font-size:12px;letter-spacing:1px;text-transform:uppercase">ROOMHY PROPERTY MANAGEMENT</p>
+            <h1 style="margin:8px 0 0;color:#ffffff;font-size:22px;font-weight:700">Rent Payment Notice</h1>
+          </td>
+        </tr>
+
+        <!-- Phase Badge -->
+        <tr>
+          <td style="padding:20px 32px 0">
+            <span style="display:inline-block;background:${badgeColor};color:${badgeText};font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;letter-spacing:0.5px">${badgeLabel}</span>
+          </td>
+        </tr>
+
+        <!-- Greeting -->
+        <tr>
+          <td style="padding:16px 32px 24px">
+            <p style="margin:0 0 10px;color:#111;font-size:15px">Dear <strong>${rent.tenantName || 'Tenant'}</strong>,</p>
+            <p style="margin:0;color:#444;font-size:14px;line-height:1.6">${greeting}</p>
+          </td>
+        </tr>
+
+        <!-- Amount Table -->
+        <tr>
+          <td style="padding:0 32px 24px">
+            <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
+              <tr style="background:#f9fafb">
+                <td style="padding:10px 14px;font-size:12px;font-weight:700;color:#888;letter-spacing:0.5px;text-transform:uppercase">Description</td>
+                <td style="padding:10px 14px;font-size:12px;font-weight:700;color:#888;letter-spacing:0.5px;text-transform:uppercase;text-align:right">Amount</td>
+              </tr>
+              <tr>
+                <td style="padding:10px 14px;border-bottom:1px solid #f0f0f0;color:#555;font-size:14px">Billing Month</td>
+                <td style="padding:10px 14px;border-bottom:1px solid #f0f0f0;color:#111;font-size:14px;text-align:right">${rent.collectionMonth || '—'}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px 14px;border-bottom:1px solid #f0f0f0;color:#555;font-size:14px">Rent Amount</td>
+                <td style="padding:10px 14px;border-bottom:1px solid #f0f0f0;color:#111;font-size:14px;text-align:right">₹${rent.rentAmount || 0}</td>
+              </tr>
+              ${penaltyRow}
+              ${electricityRow}
+              <tr style="background:#f9fafb">
+                <td style="padding:12px 14px;color:#111;font-size:15px;font-weight:700">Total Due</td>
+                <td style="padding:12px 14px;color:${headerColor};font-size:16px;font-weight:700;text-align:right">₹${rent.totalDue || rent.rentAmount || 0}</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- Days Overdue (phases 2 & 3 only) -->
+        ${!isPhase1 ? `
+        <tr>
+          <td style="padding:0 32px 20px">
+            <p style="margin:0;background:${badgeColor};border-left:4px solid ${headerColor};padding:10px 14px;border-radius:4px;color:${badgeText};font-size:13px">
+              <strong style="color:${headerColor}">${daysOverdue} day${daysOverdue !== 1 ? 's' : ''} overdue</strong> — ${footerMessage}
+            </p>
+          </td>
+        </tr>` : `
+        <tr>
+          <td style="padding:0 32px 20px">
+            <p style="margin:0;background:#eff6ff;border-left:4px solid #2563eb;padding:10px 14px;border-radius:4px;color:#1e3a8a;font-size:13px">${footerMessage}</p>
+          </td>
+        </tr>`}
+
+        <!-- Pay Now section -->
+        ${(ownerUpiId || ownerAccountNumber) ? `
+        <tr>
+          <td style="padding:0 32px 24px">
+            <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #d1fae5;border-radius:8px;overflow:hidden;background:#f0fdf4">
+              <tr>
+                <td colspan="2" style="padding:10px 14px 6px;font-size:12px;font-weight:700;color:#166534;letter-spacing:0.5px;text-transform:uppercase;border-bottom:1px solid #d1fae5">
+                  ✅ Complete Your Payment
+                </td>
+              </tr>
+              ${ownerUpiId ? `
+              <tr>
+                <td style="padding:10px 14px;color:#555;font-size:13px;width:140px;vertical-align:top">Pay via UPI</td>
+                <td style="padding:10px 14px;font-weight:700;font-size:14px;color:#166534;font-family:monospace">${ownerUpiId}</td>
+              </tr>` : ''}
+              ${ownerAccountNumber ? `
+              <tr style="border-top:1px solid #d1fae5">
+                <td style="padding:10px 14px;color:#555;font-size:13px;vertical-align:top">Bank Transfer</td>
+                <td style="padding:10px 14px;font-size:13px;color:#111;line-height:1.7">
+                  ${ownerBankName ? `<strong>${ownerBankName}</strong><br>` : ''}
+                  ${ownerAccountHolder ? `A/c Holder: ${ownerAccountHolder}<br>` : ''}
+                  A/c No: <strong style="font-family:monospace">${ownerAccountNumber}</strong><br>
+                  ${ownerIfscCode ? `IFSC: <strong style="font-family:monospace">${ownerIfscCode}</strong>` : ''}
+                </td>
+              </tr>` : ''}
+            </table>
+          </td>
+        </tr>` : ''}
+
+
+
+        <!-- Footer -->
+        <tr>
+          <td style="background:#f9fafb;padding:20px 32px;border-top:1px solid #e5e7eb">
+            <p style="margin:0;color:#888;font-size:12px;line-height:1.6">
+              This is an automated notification from <strong style="color:#333">Roomhy</strong>. Please do not reply to this email.<br>
+              For queries, contact your property manager directly.
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
+// Fetch owner payment details helper
+async function getOwnerPaymentDetails(ownerLoginId) {
+    const info = {
+        ownerUpiId: '',
+        ownerBankName: '',
+        ownerAccountHolder: '',
+        ownerAccountNumber: '',
+        ownerIfscCode: ''
+    };
+    if (!ownerLoginId) return info;
+    try {
+        if (Owner) {
+            const ownerDoc = await Owner.findOne({ loginId: ownerLoginId }).lean();
+            if (ownerDoc) {
+                info.ownerUpiId = ownerDoc.checkinUpiId || '';
+                info.ownerAccountNumber = ownerDoc.checkinBankAccountNumber || '';
+                info.ownerIfscCode = ownerDoc.checkinIfscCode || '';
+                info.ownerBankName = ownerDoc.checkinBankName || '';
+                info.ownerAccountHolder = ownerDoc.checkinAccountHolderName || '';
+            }
+        }
+        let CheckinRecord = null;
+        try { CheckinRecord = require('../models/CheckinRecord'); } catch (_) {}
+        if (CheckinRecord) {
+            const checkinDoc = await CheckinRecord.findOne({ role: 'owner', loginId: ownerLoginId }).lean();
+            const cp = checkinDoc?.ownerProfile?.payment || {};
+            if (cp.upiId && !info.ownerUpiId) info.ownerUpiId = cp.upiId;
+            if (cp.bankAccountNumber && !info.ownerAccountNumber) info.ownerAccountNumber = cp.bankAccountNumber;
+            if (cp.ifscCode && !info.ownerIfscCode) info.ownerIfscCode = cp.ifscCode;
+            if (cp.accountHolderName && !info.ownerAccountHolder) info.ownerAccountHolder = cp.accountHolderName;
+        }
+    } catch (err) {
+        console.warn('Error resolving owner bank details for reminder email:', err.message);
+    }
+    return info;
+}
+
 // Email function for rent reminder
 async function sendRentReminderEmail(rent, type = 'initial') {
     try {
@@ -484,6 +698,10 @@ async function sendRentReminderEmail(rent, type = 'initial') {
         const dashboardUrl = `${appBaseUrl}/tenant/tenantdashboard`;
         const onlinePayUrl = `${dashboardUrl}?pay=online`;
         const cashPayUrl = `${dashboardUrl}?pay=cash`;
+
+        const ownerInfo = await getOwnerPaymentDetails(rent.ownerLoginId);
+        const html = buildRentReminderEmailHtml(rent, 1, 0, ownerInfo);
+
         const subject = `Rent Due Reminder - ${rent.propertyName}`;
         const text = [
             `Hi ${rent.tenantName || 'Tenant'},`,
@@ -496,29 +714,6 @@ async function sendRentReminderEmail(rent, type = 'initial') {
             '',
             'If already paid, please ignore this reminder.'
         ].join('\n');
-        const html = `
-                <h2>Rent Due Reminder</h2>
-                <p>Dear ${rent.tenantName},</p>
-                <p>This is a reminder that rent is due between <strong>10th to 15th</strong> of the month.</p>
-                <hr>
-                <p><strong>Rent Details:</strong></p>
-                <ul>
-                    <li>Property: ${rent.propertyName}</li>
-                    <li>Room: ${rent.roomNumber}</li>
-                    <li>Rent Amount: ₹${rent.rentAmount}</li>
-                    <li>Collection Period: 10th - 15th of the month</li>
-                    <li>Current Month: ${rent.collectionMonth}</li>
-                </ul>
-                <p style="color: #d32f2f;"><strong>Please complete your payment by 15th to avoid late fees.</strong></p>
-                <p>Choose a payment method:</p>
-                <p>
-                    <a href="${onlinePayUrl}" style="background-color: #2563eb; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block; margin-right: 8px;">Pay Online (Razorpay)</a>
-                    <a href="${cashPayUrl}" style="background-color: #16a34a; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">Pay by Cash</a>
-                </p>
-                <p style="font-size: 13px; color: #444;">
-                    Cash flow: Request cash in tenant dashboard, owner marks received, then enter OTP to complete.
-                </p>
-            `;
 
         if (rent.tenantEmail) {
             await sendMail(rent.tenantEmail, subject, text, html);
@@ -538,46 +733,36 @@ async function sendRentReminderEmail(rent, type = 'initial') {
 // Email function for delayed payment reminder
 async function sendDelayedReminderEmail(rent, reminderType) {
     try {
-        const reminderNumber = reminderType.split('_')[1];
+        let num = 1;
+        if (reminderType && reminderType.includes('_')) {
+            const parts = reminderType.split('_');
+            num = parseInt(parts[1], 10) || 1;
+        }
         const urgency = ['', 'URGENT', 'VERY URGENT', 'FINAL NOTICE'];
+        const urgencyText = urgency[num] || 'FINAL NOTICE';
+        const phase = num === 3 ? 3 : 2;
+
         const appBaseUrl = (process.env.APP_BASE_URL || 'https://app.roomhy.com').replace(/\/$/, '');
         const dashboardUrl = `${appBaseUrl}/tenant/tenantdashboard`;
         const onlinePayUrl = `${dashboardUrl}?pay=online`;
         const cashPayUrl = `${dashboardUrl}?pay=cash`;
 
-        const subject = `${urgency[reminderNumber]} - Overdue Rent Payment - ${rent.propertyName}`;
+        const daysOverdue = getDaysOverdue(rent);
+        const ownerInfo = await getOwnerPaymentDetails(rent.ownerLoginId);
+        const html = buildRentReminderEmailHtml(rent, phase, daysOverdue, ownerInfo);
+
+        const subject = `Rent ${phase === 3 ? 'Final Notice' : 'Penalty Notice'} — ${rent.collectionMonth}`;
         const text = [
-            `${urgency[reminderNumber]}: Overdue rent payment`,
+            `${urgencyText}: Overdue rent payment`,
             `Property: ${rent.propertyName || '-'}`,
             `Room: ${rent.roomNumber || '-'}`,
             `Amount Due: INR ${Number((rent.totalDue || 0) - (rent.paidAmount || 0))}`,
-            `Days Overdue: ${getDaysOverdue(rent.overdueStartDate)}`,
+            `Days Overdue: ${daysOverdue}`,
             '',
             'Pay now using:',
             `1) Razorpay Online: ${onlinePayUrl}`,
             `2) Cash + OTP flow: ${cashPayUrl}`
         ].join('\n');
-        const html = `
-                <h2 style="color: #d32f2f;">${urgency[reminderNumber]}</h2>
-                <p>Dear ${rent.tenantName},</p>
-                <p style="color: #d32f2f; font-weight: bold;">Your rent payment is overdue!</p>
-                <hr>
-                <p><strong>Overdue Details:</strong></p>
-                <ul>
-                    <li>Property: ${rent.propertyName}</li>
-                    <li>Room: ${rent.roomNumber}</li>
-                    <li>Amount Due: ₹${rent.totalDue - rent.paidAmount}</li>
-                    <li>Due Date: 15th of ${rent.collectionMonth}</li>
-                    <li>Days Overdue: ${getDaysOverdue(rent.overdueStartDate)}</li>
-                </ul>
-                <p style="color: #d32f2f; background-color: #fff3cd; padding: 10px; border-left: 4px solid #d32f2f;">
-                    <strong>Reminder #${reminderNumber}:</strong> Please arrange payment immediately to avoid late fees and legal action.
-                </p>
-                <p>
-                    <a href="${onlinePayUrl}" style="background-color: #d32f2f; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block; margin-right: 8px;">Pay Online (Razorpay)</a>
-                    <a href="${cashPayUrl}" style="background-color: #16a34a; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">Pay by Cash</a>
-                </p>
-            `;
 
         if (rent.tenantEmail) {
             await sendMail(rent.tenantEmail, subject, text, html);
@@ -586,7 +771,7 @@ async function sendDelayedReminderEmail(rent, reminderType) {
             await sendMail(process.env.ADMIN_EMAIL, `[Copy] ${subject}`, text, html);
         }
 
-        console.log(`Delayed payment reminder #${reminderNumber} attempted for`, rent.tenantEmail || 'no-tenant-email');
+        console.log(`Delayed payment reminder #${num} attempted for`, rent.tenantEmail || 'no-tenant-email');
         return true;
     } catch (err) {
         console.error('Failed to send delayed reminder:', err.message);
@@ -595,11 +780,23 @@ async function sendDelayedReminderEmail(rent, reminderType) {
 }
 
 // Helper function to calculate days overdue
-function getDaysOverdue(overdueStartDate) {
-    if (!overdueStartDate) return 0;
+function getDaysOverdue(rent) {
     const today = new Date();
-    const start = new Date(overdueStartDate);
-    return Math.floor((today - start) / (1000 * 60 * 60 * 24));
+    today.setHours(0, 0, 0, 0);
+
+    let start = rent.overdueStartDate ? new Date(rent.overdueStartDate) : null;
+    if (!start && rent.collectionMonth && rent.collectionMonth.includes('-')) {
+        const [year, month] = rent.collectionMonth.split('-');
+        start = new Date(parseInt(year, 10), parseInt(month, 10) - 1, 15);
+    }
+    if (!start) {
+        start = new Date();
+        start.setDate(15);
+    }
+    start.setHours(0, 0, 0, 0);
+    const diff = today - start;
+    if (diff <= 0) return 0;
+    return Math.floor(diff / (1000 * 60 * 60 * 24));
 }
 
 // Update rent details (admin)
@@ -1204,25 +1401,27 @@ exports.testTenantEmail = async (req, res) => {
         if (!email) return res.status(400).json({ success: false, message: 'Email required' });
 
         const mailer = require('../utils/mailer');
-        const subject = 'RoomHy System Check - Multiple Channel Verification';
-        const text = 'Testing email delivery priorities: 1. Mailjet API, 2. Gmail SMTP.';
-        const html = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
-                <div style="background-color: #6366f1; color: white; padding: 20px; text-align: center;">
-                    <h2 style="margin: 0;">RoomHy System Check</h2>
-                </div>
-                <div style="padding: 25px; color: #374151; line-height: 1.6;">
-                    <p>Hello,</p>
-                    <p>This is a <strong>multi-channel delivery test</strong> triggered from the RoomHy server.</p>
-                    <p>Current configuration status:</p>
-                    <ul style="padding-left: 20px;">
-                        <li><strong>Primary:</strong> Mailjet HTTP API</li>
-                        <li><strong>Fallback:</strong> Gmail SMTP Relay</li>
-                    </ul>
-                    <p>If you received this, the delivery system is functional.</p>
-                </div>
-            </div>
-        `;
+        
+        const mockRent = {
+            tenantName: 'Pratap Narayan Choubey',
+            collectionMonth: '2026-06',
+            rentAmount: 3000,
+            totalDue: 7100,
+            propertyName: 'Roomhy Premium PG - 1',
+            roomNumber: 'Room 2'
+        };
+
+        const mockOwnerInfo = {
+            ownerUpiId: 'yesjokazis',
+            ownerBankName: 'jfyfyhjh',
+            ownerAccountHolder: 'Yes',
+            ownerAccountNumber: 'ngrfeyjbgke',
+            ownerIfscCode: 'USI09999'
+        };
+
+        const html = buildRentReminderEmailHtml(mockRent, 3, 6, mockOwnerInfo);
+        const subject = `Rent Final Notice — ${mockRent.collectionMonth}`;
+        const text = 'Testing premium rent notice email delivery.';
 
         const sent = await mailer.sendMail(email, subject, text, html);
         return res.json({ 
