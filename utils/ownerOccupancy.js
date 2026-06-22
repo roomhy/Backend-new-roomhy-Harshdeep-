@@ -49,7 +49,7 @@ const normalizeRoomInventory = (rooms = [], meta = {}) => {
             roomType: firstText(room?.roomType, room?.type, 'Standard'),
             rent: Number(room?.rent ?? room?.price ?? 0),
             price: Number(room?.price ?? room?.rent ?? 0),
-            gender: firstText(room?.gender, meta.gender, 'Mixed'),
+            gender: firstText(room?.gender, meta.gender, 'Co-Ed'),
             beds: beds.length > 0 ? beds : [{ status: 'available', tenantId: '', tenantName: '' }]
         };
     });

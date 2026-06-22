@@ -140,23 +140,43 @@ module.exports = (io) => {
       }
 
       try {
-        // Save message to database
-        const msg = await ChatMessage.create({
+        const { checkUserBlockStatus, isOwnerTenantChat, detectViolation, logViolation } = require('../utils/moderationHelper');
+        const ChatSettings = require('../models/ChatSettings');
+        const ChatRoom = require('../models/ChatRoom');
+
+        // 1. Check user restriction
+        const blockCheck = await checkUserBlockStatus(user.login_id);
+        if (blockCheck.blocked) {
+          socket.emit('error', { message: blockCheck.reason });
+          return;
+        }
+
+        // Find recipient in participants
+        const chatRoomObj = await ChatRoom.findOne({ room_id }).lean();
+        const recipient = chatRoomObj?.participants?.find(p => p.loginId !== user.login_id)?.loginId || room_id;
+
+        const originalText = String(message).trim();
+
+        // Save message to database immediately
+        const msg = new ChatMessage({
           room_id,
           sender_login_id: user.login_id,
           sender_role: user.role,
           sender_name: user.user_name,
-          message: message.trim(),
+          message: originalText,
           message_type: 'text',
+          is_blocked: false,
           created_at: new Date(),
           updated_at: new Date()
         });
+
+        await msg.save();
 
         // Update room's last message
         await ChatRoom.findOneAndUpdate(
           { room_id },
           {
-            last_message: message.trim(),
+            last_message: msg.message,
             last_message_sender_id: user.login_id,
             last_message_sender_name: user.user_name,
             last_message_time: new Date(),
@@ -164,9 +184,18 @@ module.exports = (io) => {
           }
         );
 
-        // Broadcast to all in room
+        // Broadcast to all in room instantly
         io.to(room_id).emit('new_message', msg);
         console.log(`✓ Message sent in ${room_id} by ${user.user_name}`);
+
+        // Run Groq AI moderation asynchronously in the background
+        const isModeratedChat = await isOwnerTenantChat(user.login_id, recipient);
+        if (isModeratedChat) {
+          const { moderateChatMessageAsync } = require('../utils/moderationHelper');
+          moderateChatMessageAsync(msg, recipient).catch(err => {
+            console.error('Error running async moderation (V2):', err.message);
+          });
+        }
 
       } catch (error) {
         console.error('❌ Error sending message:', error);

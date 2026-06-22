@@ -7,6 +7,7 @@ const mailer = require('../utils/mailer');
 const { notifySuperadmin } = require('../utils/superadminNotifier');
 const { formLimiter, otpLimiter, captchaProtection } = require('../middleware/security');
 const { sendOTPSMS, formatPhoneNumber } = require('../utils/smsService');
+const { protect, authorize } = require('../middleware/authMiddleware');
 
 // Temporary OTP store (for production, move to Redis/database)
 const signupOtpStore = new Map();
@@ -448,7 +449,7 @@ router.post('/login/verify-otp', async (req, res) => {
 });
 
 // Get all signups from MongoDB
-router.get('/', async (req, res) => {
+router.get('/', protect, authorize('superadmin', 'areamanager', 'employee'), async (req, res) => {
     try {
         const signups = await KYCVerification.find().select('-password');
         console.log(`✓ Retrieved ${signups.length} signups from MongoDB`);
@@ -539,7 +540,7 @@ router.post('/submit', formLimiter, captchaProtection({ required: false }), asyn
 });
 
 // Get signup by ID
-router.get('/:id', async (req, res) => {
+router.get('/:id', protect, authorize('superadmin', 'areamanager', 'employee'), async (req, res) => {
     try {
         const signup = await KYCVerification.findById(req.params.id).select('-password');
         if (!signup) {
@@ -553,7 +554,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // Update signup status
-router.put('/:id', async (req, res) => {
+router.put('/:id', protect, authorize('superadmin', 'areamanager', 'employee'), async (req, res) => {
     try {
         const { id } = req.params;
         const { status, kycStatus } = req.body;
@@ -581,7 +582,7 @@ router.put('/:id', async (req, res) => {
 });
 
 // Verify signup by email
-router.put('/verify-by-email/:email', async (req, res) => {
+router.put('/verify-by-email/:email', protect, authorize('superadmin', 'areamanager', 'employee'), async (req, res) => {
     try {
         const { email } = req.params;
         const { status, kycStatus, verifiedAt } = req.body;
@@ -609,7 +610,7 @@ router.put('/verify-by-email/:email', async (req, res) => {
 });
 
 // Alternative verify endpoint (simpler POST)
-router.post('/verify', async (req, res) => {
+router.post('/verify', protect, authorize('superadmin', 'areamanager', 'employee'), async (req, res) => {
     try {
         const { email, status, kycStatus } = req.body;
 
@@ -640,7 +641,7 @@ router.post('/verify', async (req, res) => {
 });
 
 // Delete signup (Admin only)
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', protect, authorize('superadmin'), async (req, res) => {
     try {
         const signup = await KYCVerification.findByIdAndDelete(req.params.id);
         if (!signup) {

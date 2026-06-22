@@ -163,6 +163,7 @@ router.post('/admin/leads/map', chatManagementController.mapLead);
 // Violations
 router.get('/admin/violations', chatManagementController.getViolations);
 router.post('/admin/violations/:id/resolve', chatManagementController.resolveViolation);
+router.post('/admin/violations/:id/action', chatManagementController.adminActionOnViolation);
 
 // Booking Conversion Tracker
 router.get('/admin/booking-tracker', chatManagementController.getBookingTracker);

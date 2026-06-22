@@ -43,6 +43,8 @@ async function notifySuperadmin({
         toLoginId: 'superadmin',
         from,
         type,
+        title: subject,
+        message: message,
         meta,
         read: false
     });

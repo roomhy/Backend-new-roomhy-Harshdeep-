@@ -4,6 +4,7 @@ const WebsiteEnquiry = require('../models/WebsiteEnquiry');
 const Owner = require('../models/Owner');
 const User = require('../models/user');
 const BookingRequest = require('../models/BookingRequest');
+const jwt = require('jsonwebtoken');
 
 const normalizeLoginId = (value) => String(value || '').trim();
 
@@ -15,6 +16,23 @@ function generateWebsiteUserIdFromEmail(email) {
         hash = (hash * 31 + safeEmail.charCodeAt(i)) % 1000000;
     }
     return `roomhyweb${String(hash).padStart(6, '0')}`;
+}
+
+async function isCallerSuperadmin(req) {
+    let token = null;
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+        token = req.headers.authorization.split(' ')[1];
+    }
+    if (!token) return false;
+    if (token === 'superadmin_token') return true;
+
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
+        const user = await User.findById(decoded.id).select('role').lean();
+        return user?.role === 'superadmin' || user?.role === 'admin';
+    } catch (err) {
+        return false;
+    }
 }
 
 // Get inbox summary for a specific login id
@@ -33,7 +51,8 @@ exports.getInbox = async (req, res) => {
       $or: [
         { room_id: { $in: loginVariants } },
         { sender_login_id: { $in: loginVariants } }
-      ]
+      ],
+      is_blocked: { $ne: true }
     })
       .sort({ created_at: -1 })
       .limit(1000)
@@ -209,14 +228,33 @@ exports.getConversation = async (req, res) => {
     const user1Variants = [...new Set([user1, user1.toLowerCase(), user1.toUpperCase()])];
     const user2Variants = [...new Set([user2, user2.toLowerCase(), user2.toUpperCase()])];
 
-    const messages = await ChatMessage.find({
+    const isSuperadmin = await isCallerSuperadmin(req);
+
+    const pairKey = [user1, user2].sort().join(':').toUpperCase();
+    const query = {
       $or: [
         { room_id: { $in: user1Variants }, sender_login_id: { $in: user2Variants } },
-        { room_id: { $in: user2Variants }, sender_login_id: { $in: user1Variants } }
+        { room_id: { $in: user2Variants }, sender_login_id: { $in: user1Variants } },
+        { conversation_id: pairKey, sender_login_id: { $in: ['system', 'System'] } }
       ]
-    })
+    };
+
+    if (!isSuperadmin) {
+      query.is_blocked = { $ne: true };
+    }
+
+    const messages = await ChatMessage.find(query)
       .sort({ created_at: 1 })
-      .limit(200);
+      .limit(200)
+      .lean();
+
+    if (isSuperadmin) {
+      messages.forEach(msg => {
+        if (msg.is_blocked && msg.original_message_encrypted) {
+          msg.message = ChatMessage.decryptText(msg.original_message_encrypted);
+        }
+      });
+    }
 
     res.json(messages);
   } catch (error) {
@@ -289,6 +327,15 @@ exports.sendMessage = async (req, res) => {
       return res.status(400).json({ error: 'to_login_id, from_login_id, and message are required' });
     }
 
+    const { checkUserBlockStatus, isOwnerTenantChat, detectViolation, logViolation } = require('../utils/moderationHelper');
+    const ChatSettings = require('../models/ChatSettings');
+
+    // 1. Check restriction
+    const blockCheck = await checkUserBlockStatus(from_login_id);
+    if (blockCheck.blocked) {
+      return res.status(403).json({ error: blockCheck.reason, blocked: true });
+    }
+
     // Try to find sender details
     let senderName = from_login_id;
     let senderRole = 'system';
@@ -306,13 +353,16 @@ exports.sendMessage = async (req, res) => {
       senderRole = 'website_user';
     }
 
+    const originalText = String(message).trim();
+
     const msg = new ChatMessage({
       room_id: to_login_id,
       sender_login_id: from_login_id,
       sender_name: senderName,
       sender_role: senderRole,
-      message: String(message).trim(),
+      message: originalText,
       message_type: 'text',
+      is_blocked: false,
       created_at: new Date(),
       updated_at: new Date()
     });
@@ -320,9 +370,9 @@ exports.sendMessage = async (req, res) => {
     await msg.save();
 
     // Check if this message is a payment link and update booking funnel
-    if (message.includes('/website/pay?bookingId=')) {
+    if (originalText.includes('/website/pay?bookingId=')) {
       try {
-        const bookingIdMatch = message.match(/bookingId=([a-f0-9]{24})/i);
+        const bookingIdMatch = originalText.match(/bookingId=([a-f0-9]{24})/i);
         if (bookingIdMatch && bookingIdMatch[1]) {
           await BookingRequest.findByIdAndUpdate(bookingIdMatch[1], {
             payment_link_sent_at: new Date()
@@ -334,8 +384,26 @@ exports.sendMessage = async (req, res) => {
       }
     }
 
-    // If we had access to IO here, we would emit. 
-    // For now, saving to DB is enough as the chat page fetches on load.
+    // Run Groq AI moderation asynchronously in the background
+    const isModeratedChat = await isOwnerTenantChat(from_login_id, to_login_id);
+    if (isModeratedChat) {
+      const { moderateChatMessageAsync } = require('../utils/moderationHelper');
+      moderateChatMessageAsync(msg, to_login_id).catch(err => {
+        console.error('Error running async moderation (REST):', err.message);
+      });
+    }
+
+    // Emit real-time update via Socket.io if global.io is available
+    if (global.io) {
+      global.io.to(to_login_id).emit('receive_message', {
+        _id: msg._id,
+        sender_login_id: from_login_id,
+        sender_name: senderName,
+        message: msg.message,
+        created_at: msg.created_at
+      });
+      global.io.to(to_login_id).emit('new_message', msg);
+    }
     
     res.json({ success: true, message: msg });
   } catch (error) {

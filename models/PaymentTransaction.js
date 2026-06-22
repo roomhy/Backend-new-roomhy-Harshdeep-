@@ -8,9 +8,17 @@ const mongoose = require('mongoose');
  */
 const paymentTransactionSchema = new mongoose.Schema({
   // ─── RAZORPAY ─────────────────────────────────────────────────────────────
-  razorpay_payment_id: { type: String, unique: true, index: true },
-  razorpay_order_id:   { type: String, default: null },
+  razorpay_payment_id: { type: String, unique: true, sparse: true, index: true },
+  razorpay_order_id:   { type: String, unique: true, sparse: true, index: true, default: null },
   razorpay_signature:  { type: String, default: null },
+
+  // ─── STATE MACHINE ────────────────────────────────────────────────────────
+  status: {
+    type: String,
+    enum: ['Created', 'Verified', 'Settled'],
+    default: 'Created',
+    index: true
+  },
 
   // ─── BOOKING REFERENCE ────────────────────────────────────────────────────
   booking_id:     { type: String, required: true, index: true },

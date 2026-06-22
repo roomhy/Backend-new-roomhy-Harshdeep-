@@ -144,6 +144,7 @@ const ownerSchema = new mongoose.Schema({
     },
     isActive: { type: Boolean, default: false },
     isDeleted: { type: Boolean, default: false },
+    chatRestrictedUntil: { type: Date, default: null },
     settings: {
         checkoutTime: { type: String, default: "10:00 AM" },
         checkinTime: { type: String, default: "11:00 AM" },
@@ -152,6 +153,9 @@ const ownerSchema = new mongoose.Schema({
         curfewTime: { type: String, default: "11:00 PM" },
         electricityUnitRate: { type: Number, default: 12 }
     },
+    walletBalance: { type: Number, default: 0 },
+    pendingBalance: { type: Number, default: 0 },
+    withdrawnBalance: { type: Number, default: 0 },
     createdAt: { type: Date, default: Date.now }
 });
 

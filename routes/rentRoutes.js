@@ -1,50 +1,38 @@
 const express = require('express');
 const router = express.Router();
 const rentController = require('../controllers/rentController');
+const { protect, authorize } = require('../middleware/authMiddleware');
 
-// Test email delivery route
-router.post('/test-tenant-email', rentController.testTenantEmail);
+// Secure all endpoints with authentication
+router.use(protect);
 
-// Create new rent record
-router.post('/', rentController.createRent);
+// Staff-only endpoints
+router.post('/test-tenant-email', authorize('superadmin'), rentController.testTenantEmail);
+router.post('/', authorize('superadmin', 'areamanager', 'employee'), rentController.createRent);
+router.get('/', authorize('superadmin', 'areamanager', 'employee'), rentController.getAllRents);
+router.post('/reminders/send', authorize('superadmin', 'areamanager', 'employee'), rentController.sendRentReminder);
+router.post('/reminders/delayed', authorize('superadmin', 'areamanager', 'employee'), rentController.sendDelayedPaymentReminder);
+router.post('/reminders/start-unpaid', authorize('superadmin', 'areamanager', 'employee'), rentController.startManualUnpaidReminders);
+router.post('/platform/payout', authorize('superadmin'), rentController.processOwnerPayout);
+router.get('/platform/summary', authorize('superadmin'), rentController.getPlatformPayoutSummary);
+router.patch('/:rentId', authorize('superadmin', 'areamanager', 'employee'), rentController.updateRent);
+router.delete('/:rentId', authorize('superadmin'), rentController.deleteRent);
 
-// Get all rents (superadmin view)
-router.get('/', rentController.getAllRents);
+// Owner-only or staff endpoints
+router.get('/owner/:ownerLoginId', authorize('superadmin', 'areamanager', 'employee', 'owner'), rentController.getRentsByOwner);
+router.post('/cash/owner-received', authorize('superadmin', 'areamanager', 'employee', 'owner'), rentController.markCashReceivedByOwner);
+router.post('/cash/verify-otp', authorize('superadmin', 'areamanager', 'employee', 'owner'), rentController.verifyCashPaymentOtp);
 
-// Get rents for specific owner
-router.get('/owner/:ownerLoginId', rentController.getRentsByOwner);
-router.get('/tenant/:tenantLoginId', rentController.getRentsByTenant);
+// Tenant, Owner, or Staff endpoints
+router.get('/tenant/:tenantLoginId', authorize('superadmin', 'areamanager', 'employee', 'tenant', 'owner'), rentController.getRentsByTenant);
+router.post('/create-order', authorize('superadmin', 'areamanager', 'employee', 'tenant'), rentController.createRazorpayOrder);
+router.post('/record-payment', authorize('superadmin', 'areamanager', 'employee', 'tenant', 'owner'), rentController.recordPaymentByTenant);
+router.post('/record-payment-by-tenant', authorize('superadmin', 'areamanager', 'employee', 'tenant'), rentController.recordPaymentByTenant);
+router.post('/verify-payment', authorize('superadmin', 'areamanager', 'employee', 'tenant'), rentController.verifyRazorpayPayment);
+router.post('/cash/request', authorize('superadmin', 'areamanager', 'employee', 'tenant'), rentController.requestCashPayment);
 
-// Send rent reminders (normal 10-15th period) - BEFORE parameterized routes
-router.post('/reminders/send', rentController.sendRentReminder);
-
-// Send delayed payment reminders (3x daily after 15th) - BEFORE parameterized routes
-router.post('/reminders/delayed', rentController.sendDelayedPaymentReminder);
-router.post('/reminders/start-unpaid', rentController.startManualUnpaidReminders);
-
-// Create Razorpay order for rent payment - BEFORE parameterized routes
-router.post('/create-order', rentController.createRazorpayOrder);
-
-// Record payment by tenant (for Razorpay callback) - BEFORE parameterized routes
-router.post('/record-payment', rentController.recordPaymentByTenant);
-router.post('/record-payment-by-tenant', rentController.recordPaymentByTenant);
-router.post('/verify-payment', rentController.verifyRazorpayPayment);
-router.post('/cash/request', rentController.requestCashPayment);
-router.post('/cash/owner-received', rentController.markCashReceivedByOwner);
-router.post('/cash/verify-otp', rentController.verifyCashPaymentOtp);
-router.post('/platform/payout', rentController.processOwnerPayout);
-router.get('/platform/summary', rentController.getPlatformPayoutSummary);
-
-// Get single rent
-router.get('/:rentId', rentController.getRent);
-
-// Record payment after Razorpay success
-router.post('/:rentId/payment', rentController.recordPayment);
-
-// Update rent details
-router.patch('/:rentId', rentController.updateRent);
-
-// Delete rent record
-router.delete('/:rentId', rentController.deleteRent);
+// Parameterized routes (placed at the end to avoid matching conflicts)
+router.get('/:rentId', authorize('superadmin', 'areamanager', 'employee', 'tenant', 'owner'), rentController.getRent);
+router.post('/:rentId/payment', authorize('superadmin', 'areamanager', 'employee', 'tenant', 'owner'), rentController.recordPayment);
 
 module.exports = router;

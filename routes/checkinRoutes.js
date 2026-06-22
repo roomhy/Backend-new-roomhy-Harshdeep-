@@ -471,6 +471,13 @@ async function completeTenantAgreementAndNotify(loginId, { requestId = '', provi
     tenant.updatedAt = new Date();
     await tenant.save();
 
+    try {
+        const { settleTransactionMoveIn } = require('../controllers/bookingController');
+        await settleTransactionMoveIn(normalizedLoginId);
+    } catch (settleErr) {
+        console.error('[TENANT AGREEMENT COMPLETE] Settle payment transaction error:', settleErr.message);
+    }
+
     const dashboardUrl = `${APP_URL}/tenant/tenantdashboard`;
     const tenantLoginUrl = `${APP_URL}/tenant/tenantlogin`;
     let loginEmailSent = false;

@@ -7,7 +7,7 @@ let Owner = null;
 let Property = null;
 let Room = null;
 let Complaint = null;
-let TaskBoard = null;
+let Task = null;
 let VisitorLog = null;
 let ElectricityMeter = null;
 let OwnerChangeRequest = null;
@@ -21,7 +21,7 @@ try {
     Property = require('../models/Property');
     Room = require('../models/Room');
     Complaint = require('../models/Complaint');
-    TaskBoard = require('../models/TaskBoard');
+    Task = require('../models/Task');
     VisitorLog = require('../models/VisitorLog');
     ElectricityMeter = require('../models/ElectricityMeter');
     OwnerChangeRequest = require('../models/OwnerChangeRequest');
@@ -105,10 +105,9 @@ const demoResetSchedule = cron.schedule('0 0 * * *', async () => {
         
         if (Complaint) await Complaint.deleteMany({ ownerLoginId: demoLoginId });
         
-        // TaskBoard belongs to owner by object id, fetch owner first
-        const demoOwner = await Owner.findOne({ loginId: demoLoginId });
-        if (demoOwner && TaskBoard) {
-            await TaskBoard.deleteMany({ ownerId: demoOwner._id });
+        // Delete tasks belonging to the demo owner
+        if (Task) {
+            await Task.deleteMany({ ownerLoginId: demoLoginId });
         }
         
         if (VisitorLog) await VisitorLog.deleteMany({ ownerLoginId: demoLoginId });

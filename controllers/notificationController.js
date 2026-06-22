@@ -89,8 +89,19 @@ exports.getNotifications = async (req, res) => {
     const onlyUnread = req.query.unread === '1' || req.query.unread === 'true';
     const filter = {};
     if (onlyUnread) filter.read = false;
-    // If user provided toLoginId query, filter for that
-    if (req.query.toLoginId) filter.toLoginId = req.query.toLoginId;
+    // If user provided toLoginId query, support both specific and general superadmin targets
+    if (req.query.toLoginId) {
+      const loginIdLower = req.query.toLoginId.toLowerCase();
+      if (loginIdLower === 'superadmin' || loginIdLower === 'admin') {
+        filter.$or = [
+          { toLoginId: req.query.toLoginId },
+          { toLoginId: 'superadmin' },
+          { toRole: 'superadmin' }
+        ];
+      } else {
+        filter.toLoginId = req.query.toLoginId;
+      }
+    }
     const notifs = await Notification.find(filter).sort({ createdAt: -1 }).limit(50);
     res.json(notifs);
   } catch (err) {

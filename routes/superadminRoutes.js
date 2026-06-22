@@ -10,6 +10,11 @@ const Owner = require('../models/Owner');
 const PaymentTransaction = require('../models/PaymentTransaction');
 const Room = require('../models/Room');
 const Employee = require('../models/Employee');
+const { protect, authorize } = require('../middleware/authMiddleware');
+
+// Secure all superadmin routes with router-level middleware
+router.use(protect);
+router.use(authorize('superadmin'));
 
 // Get platform overview stats (Main Dashboard)
 router.get('/diagnostic-db', async (req, res) => {
@@ -956,6 +961,39 @@ router.post('/revenue/payout/:id/transfer', async (req, res) => {
     
     await tx.save();
 
+    // ── PAYOUT SANDBOX LAYER (additive-only, fully isolated) ─────────────────
+    // This block ONLY runs when PAYOUT_ENABLED=true in .env
+    // Any failure here is completely non-blocking — existing tx, balance,
+    // and booking records are NEVER rolled back or modified by this block.
+    if (process.env.PAYOUT_ENABLED === 'true') {
+      try {
+        const razorpayPayoutService = require('../services/razorpayPayoutService');
+        const ownerForPayout = await Owner.findOne({
+          loginId: { $regex: new RegExp(`^${String(tx.owner_id || '').trim()}$`, 'i') }
+        }).lean();
+
+        const payoutResult = await razorpayPayoutService.initiateOwnerPayout(
+          tx,
+          ownerForPayout || {},
+          { initiated_by: initiated_by || 'superadmin' }
+        );
+
+        if (payoutResult.success && payoutResult.razorpay_payout_id) {
+          // Only update payout_reference with real Razorpay ID — no other fields touched
+          tx.payout_reference = payoutResult.razorpay_payout_id;
+          await tx.save();
+          console.log(`[Payout] ✅ Real payout initiated: ${payoutResult.razorpay_payout_id} | sandbox=${process.env.PAYOUT_SANDBOX_MODE}`);
+        } else {
+          // Payout failed — existing mock reference remains, log already saved in service
+          console.warn(`[Payout] ⚠️ Payout attempt failed (non-blocking): ${payoutResult.error}`);
+        }
+      } catch (payoutLayerErr) {
+        // ❌ Any unexpected error is fully swallowed here — response is unaffected
+        console.warn('[Payout] ⚠️ Payout sandbox layer error (non-blocking):', payoutLayerErr.message);
+      }
+    }
+    // ── END PAYOUT SANDBOX LAYER ──────────────────────────────────────────────
+
     // Audit log for payout transfer
     try {
       const AuditLog = require('../models/AuditLog');
@@ -984,6 +1022,36 @@ router.post('/revenue/payout/:id/transfer', async (req, res) => {
       success: true,
       message: 'Payout transferred successfully',
       transaction: tx
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ─── PAYOUT LOGS (Sandbox/Testing Audit Trail) ───────────────────────────────
+// GET /api/superadmin/payout-logs
+// Returns payout attempt history from PayoutLog collection.
+// This endpoint is additive — it reads from payout_logs collection only.
+router.get('/payout-logs', async (req, res) => {
+  try {
+    const PayoutLog = require('../models/PayoutLog');
+    const { owner_id, status, limit = 50 } = req.query;
+
+    const filter = {};
+    if (owner_id) filter.owner_id = String(owner_id).toUpperCase();
+    if (status)   filter.status   = status;
+
+    const logs = await PayoutLog.find(filter)
+      .sort({ created_at: -1 })
+      .limit(Math.min(Number(limit) || 50, 200))
+      .lean();
+
+    res.json({
+      success: true,
+      count: logs.length,
+      payout_enabled: process.env.PAYOUT_ENABLED === 'true',
+      sandbox_mode:   process.env.PAYOUT_SANDBOX_MODE !== 'false',
+      logs
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -1450,5 +1518,8 @@ router.get('/owners', async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// Finance Sub-System Mount
+router.use('/finance', require('./financeRoutes'));
 
 module.exports = router;

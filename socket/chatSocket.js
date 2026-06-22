@@ -81,15 +81,27 @@ module.exports = (io) => {
           return;
         }
 
-        // Save message to database
-        // room_id = receiver's loginId (to_login_id)
+        const { checkUserBlockStatus, isOwnerTenantChat, detectViolation, logViolation } = require('../utils/moderationHelper');
+        const ChatSettings = require('../models/ChatSettings');
+
+        // 1. Check user restriction
+        const blockCheck = await checkUserBlockStatus(from_login_id);
+        if (blockCheck.blocked) {
+          socket.emit('error', { message: blockCheck.reason });
+          return;
+        }
+
+        const originalText = String(message).trim();
+
+        // Save message to database immediately
         const msg = new ChatMessage({
           room_id: to_login_id,
           sender_login_id: from_login_id,
           sender_name: socket.userName,
           sender_role: socket.userRole,
-          message: message.trim(),
+          message: originalText,
           message_type: 'text',
+          is_blocked: false,
           created_at: new Date(),
           updated_at: new Date()
         });
@@ -109,6 +121,15 @@ module.exports = (io) => {
 
         // Confirm to sender
         socket.emit('message_sent', { success: true, id: msg._id });
+
+        // Run Groq AI moderation asynchronously in the background
+        const isModeratedChat = await isOwnerTenantChat(from_login_id, to_login_id);
+        if (isModeratedChat) {
+          const { moderateChatMessageAsync } = require('../utils/moderationHelper');
+          moderateChatMessageAsync(msg, to_login_id).catch(err => {
+            console.error('Error running async moderation:', err.message);
+          });
+        }
 
       } catch (error) {
         console.error('❌ Error sending message:', error);

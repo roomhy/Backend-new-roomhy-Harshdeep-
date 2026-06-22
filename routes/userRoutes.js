@@ -284,6 +284,9 @@ router.delete('/account', protect, async (req, res) => {
 
 // Seed user - for development only
 router.post('/seed-user', async (req, res) => {
+    if (process.env.NODE_ENV === 'production') {
+        return res.status(403).json({ success: false, message: 'Seeding is forbidden in production' });
+    }
     try {
         const bcrypt = require('bcryptjs');
         const KYCVerification = require('../models/KYCVerification');

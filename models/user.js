@@ -24,6 +24,7 @@ const userSchema = new mongoose.Schema({
     isActive: { type: Boolean, default: true },
     requirePasswordReset: { type: Boolean, default: false },
     isDeleted: { type: Boolean, default: false },
+    chatRestrictedUntil: { type: Date, default: null },
 
     // Profile fields
     profilePic: { type: String },

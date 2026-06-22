@@ -261,7 +261,11 @@ exports.getAnalytics = async (req, res) => {
       stagnantChats,
       convertedToBooking,
       paymentEvents,
-      revenueResult
+      revenueResult,
+      contactSharingAttempts,
+      commissionBypassAttempts,
+      externalSettlementAttempts,
+      repeatedViolatorsResult
     ] = await Promise.all([
       ChatRoom.countDocuments({ status: 'Active' }),
       ChatRoom.countDocuments({ status: 'Closed' }),
@@ -274,6 +278,14 @@ exports.getAnalytics = async (req, res) => {
       ChatEvent.aggregate([
         { $match: { event_type: 'PAYMENT_COMPLETED', created_at: { $gte: thirtyDaysAgo } } },
         { $group: { _id: null, total: { $sum: '$amount' } } }
+      ]),
+      ChatViolation.countDocuments({ violationType: 'contact_sharing' }),
+      ChatViolation.countDocuments({ violationType: 'commission_bypass' }),
+      ChatViolation.countDocuments({ violationType: 'external_settlement' }),
+      ChatViolation.aggregate([
+        { $group: { _id: '$participantLoginId', count: { $sum: 1 } } },
+        { $match: { count: { $gte: 2 } } },
+        { $count: 'total' }
       ])
     ]);
 
@@ -281,6 +293,8 @@ exports.getAnalytics = async (req, res) => {
     const bookingConversionRate = totalActiveChats > 0
       ? ((convertedToBooking / (totalActiveChats + totalClosedChats)) * 100).toFixed(1)
       : 0;
+    
+    const repeatedViolators = repeatedViolatorsResult[0]?.total || 0;
 
     // 7-day daily trend
     const dailyTrend = await ChatEvent.aggregate([
@@ -298,7 +312,11 @@ exports.getAnalytics = async (req, res) => {
         convertedToBooking,
         paymentEvents,
         revenue,
-        bookingConversionRate: `${bookingConversionRate}%`
+        bookingConversionRate: `${bookingConversionRate}%`,
+        contactSharingAttempts,
+        commissionBypassAttempts,
+        externalSettlementAttempts,
+        repeatedViolators
       },
       dailyTrend
     });
@@ -392,37 +410,64 @@ exports.updateDispute = async (req, res) => {
   }
 };
 
+// Helper to determine why the owner and tenant are talking
+async function getConversationContext(ownerId, tenantId) {
+  try {
+    const BookingRequest = require('../models/BookingRequest');
+    const ChatRoom = require('../models/ChatRoom');
+
+    // Find the latest booking request between this owner and tenant/user
+    const booking = await BookingRequest.findOne({
+      owner_id: ownerId,
+      $or: [
+        { user_id: tenantId },
+        { email: tenantId }
+      ]
+    }).sort({ created_at: -1 }).lean();
+
+    if (booking) {
+      return `Booking Request for property "${booking.property_name}" (Rent: ₹${booking.rent_amount}, Status: ${booking.booking_status})`;
+    }
+
+    // Try finding a chat room involving both
+    const chatRoom = await ChatRoom.findOne({
+      $or: [
+        { room_id: ownerId },
+        { room_id: tenantId }
+      ]
+    }).lean();
+
+    if (chatRoom && chatRoom.property_name) {
+      return `Inquiry for property "${chatRoom.property_name}"`;
+    }
+  } catch (err) {
+    console.error('Error getting conversation context:', err);
+  }
+  return 'General inquiry / No active booking request found';
+}
+
 // ─── VIOLATIONS ──────────────────────────────────────────────────────────────
 exports.getViolations = async (req, res) => {
   try {
-    // Dynamically sync violations from flagged messages
-    const flaggedMessages = await ChatMessage.find({ violation_type: { $ne: null } }).lean();
-    for (const msg of flaggedMessages) {
-      const exists = await ChatViolation.findOne({ messageSnippet: msg.message });
-      if (!exists) {
-        let type = 'other';
-        if (msg.violation_type === 'spam') type = 'spam';
-        else if (msg.violation_type === 'abuse') type = 'abuse';
-        else if (['phone', 'email', 'whatsapp', 'telegram', 'upi_payment', 'external_link'].includes(msg.violation_type)) {
-          type = 'contact_sharing';
-        }
-        await ChatViolation.create({
-          participantLoginId: msg.sender_login_id,
-          participantName: msg.sender_name || msg.sender_login_id,
-          violationType: type,
-          messageSnippet: msg.message,
-          actionTaken: msg.moderation_status === 'action_taken' ? 'warned' : 'none',
-          createdAt: msg.created_at
-        });
-      }
-    }
-
     const violations = await ChatViolation.find().sort({ createdAt: -1 }).lean();
-    res.json({ success: true, violations });
+    
+    // Populate conversation context for each violation dynamically
+    const populatedViolations = await Promise.all(
+      violations.map(async (v) => {
+        const context = await getConversationContext(v.ownerId, v.tenantId);
+        return {
+          ...v,
+          conversationContext: context
+        };
+      })
+    );
+
+    res.json({ success: true, violations: populatedViolations });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 };
+
 
 exports.resolveViolation = async (req, res) => {
   try {
@@ -452,6 +497,117 @@ exports.resolveViolation = async (req, res) => {
       path: req.originalUrl || `/api/chat/admin/violations/${req.params.id}/resolve`,
       statusCode: 200,
       payload: { violationId: req.params.id, actionTaken }
+    });
+
+    res.json({ success: true, violation });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.adminActionOnViolation = async (req, res) => {
+  try {
+    const { action, reason } = req.body;
+    const violationId = req.params.id;
+    const adminId = req.user?.loginId || 'SUPER_ADMIN';
+
+    const violation = await ChatViolation.findById(violationId);
+    if (!violation) {
+      return res.status(404).json({ success: false, message: 'Violation not found' });
+    }
+
+    const targetLoginId = violation.participantLoginId;
+    const User = require('../models/user');
+    const Owner = require('../models/Owner');
+
+    let historyAction = action;
+
+    if (action === 'send_warning') {
+      violation.status = 'Warning Sent';
+      historyAction = 'Warning Sent';
+      // Create warning system message in the room
+      const ChatMessage = require('../models/ChatMessage');
+      const pairKey = [violation.ownerId, violation.tenantId].sort().join(':').toUpperCase();
+      const warningMsg = await ChatMessage.create({
+        room_id: violation.conversationId || targetLoginId,
+        conversation_id: pairKey,
+        sender_login_id: 'system',
+        sender_name: 'System',
+        sender_role: 'superadmin',
+        message: `⚠️ System Warning: Sharing contact details, external links, or external payments is strictly against platform policies. Please keep your communication on Roomhy.`,
+        message_type: 'text',
+        created_at: new Date(),
+        updated_at: new Date()
+      });
+
+      // Broadcast real-time message via socket to both rooms (owner and tenant)
+      if (global.io) {
+        const payload = {
+          _id: warningMsg._id,
+          sender_login_id: 'system',
+          sender_name: 'System',
+          sender_role: 'superadmin',
+          message: warningMsg.message,
+          created_at: warningMsg.created_at
+        };
+        global.io.to(violation.ownerId).emit('receive_message', { ...payload, room_id: violation.ownerId });
+        global.io.to(violation.tenantId).emit('receive_message', { ...payload, room_id: violation.tenantId });
+      }
+    } else if (action === 'restrict_chat') {
+      violation.status = 'Warning Sent';
+      historyAction = 'Chat Restricted (24h)';
+      const durationHours = 24;
+      const restrictUntil = new Date(Date.now() + durationHours * 60 * 60 * 1000);
+      
+      // Update User and Owner restriction
+      await Promise.all([
+        User.updateOne({ loginId: targetLoginId }, { chatRestrictedUntil: restrictUntil }),
+        Owner.updateOne({ loginId: targetLoginId.toUpperCase() }, { chatRestrictedUntil: restrictUntil })
+      ]);
+    } else if (action === 'suspend_user') {
+      violation.status = 'Resolved';
+      violation.resolvedAt = new Date();
+      violation.resolvedBy = adminId;
+      historyAction = 'Account Suspended';
+
+      // Suspend User/Owner
+      await Promise.all([
+        User.updateOne({ loginId: targetLoginId }, { isActive: false, status: 'blocked' }),
+        Owner.updateOne({ loginId: targetLoginId.toUpperCase() }, { isActive: false })
+      ]);
+    } else if (action === 'mark_reviewed') {
+      violation.status = 'Reviewed';
+      historyAction = 'Marked Reviewed';
+    } else if (action === 'mark_resolved') {
+      violation.status = 'Resolved';
+      violation.resolvedAt = new Date();
+      violation.resolvedBy = adminId;
+      historyAction = 'Marked Resolved';
+    } else {
+      return res.status(400).json({ success: false, message: 'Invalid action specified' });
+    }
+
+    // Add to action history
+    violation.actionHistory.push({
+      action: historyAction,
+      adminId,
+      reason: reason || 'No reason provided',
+      timestamp: new Date()
+    });
+
+    await violation.save();
+
+    // Create Audit Log
+    const AuditLog = require('../models/AuditLog');
+    await AuditLog.create({
+      actorId: adminId,
+      actorRole: 'superadmin',
+      module: 'Chat',
+      action: `Moderation Action: ${action}`,
+      method: 'POST',
+      path: req.originalUrl,
+      statusCode: 200,
+      payload: { violationId, action, reason }
     });
 
     res.json({ success: true, violation });

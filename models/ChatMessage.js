@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const crypto = require('crypto');
 
 // Encryption helpers (AES-256-CBC)
-const ENCRYPTION_KEY = process.env.MSG_ENCRYPTION_KEY || 'roomhy_chat_sec_key_32bytes_long!'; // 32 bytes
+const ENCRYPTION_KEY = process.env.MSG_ENCRYPTION_KEY || 'roomhy_chat_sec_key_32bytes_long'; // 32 bytes
 const IV_LENGTH = 16;
 
 function encryptText(text) {
@@ -29,6 +29,7 @@ function decryptText(text) {
 
 const chatMessageSchema = new mongoose.Schema({
   room_id: { type: String, required: true, index: true },
+  conversation_id: { type: String, default: null, index: true },
   sender_login_id: { type: String, required: true },
   sender_name: String,
   sender_role: {
@@ -45,11 +46,12 @@ const chatMessageSchema = new mongoose.Schema({
   is_read: { type: Boolean, default: false },
 
   // Moderation fields
+  is_blocked: { type: Boolean, default: false },
   is_masked: { type: Boolean, default: false },
   original_message_encrypted: { type: String, default: null }, // AES encrypted
   violation_type: {
     type: String,
-    enum: ['phone', 'email', 'whatsapp', 'telegram', 'upi_payment', 'external_link', 'spam', 'abuse', null],
+    enum: ['phone', 'email', 'whatsapp', 'telegram', 'upi_payment', 'external_link', 'spam', 'abuse', 'contact_sharing', 'external_settlement', 'commission_bypass', null],
     default: null
   },
   moderation_status: {
@@ -68,7 +70,7 @@ chatMessageSchema.index({ room_id: 1, created_at: -1 });
 // Automatic Moderation Pre-save Hook
 chatMessageSchema.pre('save', async function(next) {
   // Only moderate text messages sent by non-system and non-superadmin users
-  if (this.message_type !== 'text' || this.sender_login_id === 'system' || this.sender_role === 'superadmin') {
+  if (this.is_blocked || this.message_type !== 'text' || this.sender_login_id === 'system' || this.sender_role === 'superadmin') {
     return next();
   }
 
