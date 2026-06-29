@@ -45,7 +45,8 @@ exports.protect = async (req, res, next) => {
 exports.authorize = (...roles) => {
     return (req, res, next) => {
         if (!req.user) return res.status(401).json({ message: 'Not authenticated' });
-        if (!roles.includes(req.user.role)) return res.status(403).json({ message: 'Forbidden' });
+        const expanded = roles.includes('superadmin') ? [...roles, 'admin'] : roles;
+        if (!expanded.includes(req.user.role)) return res.status(403).json({ message: 'Forbidden' });
         next();
     };
 };

@@ -8,15 +8,16 @@ const tenantAttendanceSchema = new mongoose.Schema(
         roomNo: { type: String, required: true },
         status: { 
             type: String, 
-            enum: ['Inside', 'Outside', 'On Leave'], 
+            enum: ['Inside', 'Outside', 'On Leave', 'Present', 'Absent'], 
             default: 'Inside' 
         },
+        date: { type: String }, // YYYY-MM-DD for daily attendance tracking
         lastScanTime: { type: Date, default: Date.now }
     },
     { timestamps: true }
 );
 
-// We want only ONE attendance record per tenant. We just update it as they move in/out.
-tenantAttendanceSchema.index({ tenantId: 1 }, { unique: true });
+// Unique index per tenant per date for daily records
+tenantAttendanceSchema.index({ tenantId: 1, date: 1 }, { unique: true });
 
 module.exports = mongoose.model('TenantAttendance', tenantAttendanceSchema);

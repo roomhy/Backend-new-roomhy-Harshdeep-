@@ -142,7 +142,7 @@ const ownerSchema = new mongoose.Schema({
         size: Number,
         dataUrl: String
     },
-    isActive: { type: Boolean, default: false },
+    isActive: { type: Boolean, default: true },
     isDeleted: { type: Boolean, default: false },
     chatRestrictedUntil: { type: Date, default: null },
     settings: {

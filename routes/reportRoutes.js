@@ -43,6 +43,16 @@ router.post('/generate', async (req, res) => {
                 const statusMap = { 'Paid': 'paid', 'paid': 'paid', 'Pending': 'pending', 'pending': 'pending', 'Overdue': 'overdue', 'overdue': 'overdue', 'completed': 'completed' };
                 filter.paymentStatus = statusMap[status] || status.toLowerCase();
             }
+
+            const Tenant = require('../models/Tenant');
+            const activeTenants = await Tenant.find({ isDeleted: { $ne: true } }).select('_id loginId');
+            const activeTenantIds = activeTenants.map(t => t._id);
+            const activeTenantLoginIds = activeTenants.map(t => t.loginId).filter(Boolean);
+            filter.$or = [
+                { tenantId: { $in: activeTenantIds } },
+                { tenantLoginId: { $in: activeTenantLoginIds } }
+            ];
+
             const rents = await Rent.find(filter).sort({ createdAt: -1 }).limit(500);
             
             const totalCollected = rents.filter(r => r.paymentStatus === 'paid' || r.paymentStatus === 'completed').reduce((sum, r) => sum + (r.rentAmount || r.paidAmount || 0), 0);

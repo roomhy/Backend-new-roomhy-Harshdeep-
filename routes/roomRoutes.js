@@ -18,6 +18,9 @@ router.get('/:roomId/readings', roomController.getElectricityReadings);
 // Get all rooms for an owner
 router.get('/owner/:ownerLoginId', roomController.getRoomsByOwner);
 
+// Get all rooms (Super Admin)
+router.get('/all', protect, authorize('superadmin'), roomController.getAllRooms);
+
 // Toggle promoted status
 router.put('/:roomId/toggle-promoted', roomController.togglePromoted);
 

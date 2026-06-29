@@ -104,36 +104,122 @@ router.get('/stats', protect, authorize('superadmin'), async (req, res) => {
 // Home Overview Stats
 router.get('/home/overview', protect, authorize('superadmin'), async (req, res) => {
   try {
-    const [properties, tenants, rents, pendingRents] = await Promise.all([
-      Property.countDocuments(),
-      User.countDocuments({ role: { $in: ['tenant', 'user'] } }),
-      Rent.find({}),
-      Rent.find({ paymentStatus: { $ne: 'paid' } }).limit(10).sort({ createdAt: -1 })
+    const Tenant = require('../models/Tenant');
+
+    // --- Core counts (exclude deleted) ---
+    const [properties, tenants, rents] = await Promise.all([
+      Property.countDocuments({ isDeleted: { $ne: true } }),
+      Tenant.countDocuments({ isDeleted: { $ne: true } }),
+      Rent.find({})
     ]);
 
-    const totalAlerts = await Rent.countDocuments({ paymentStatus: { $ne: 'paid' } });
-    
+    // --- Only count pending rents for active (non-deleted) tenants ---
+    const activeTenants = await Tenant.find({
+      isDeleted: { $ne: true },
+      status: { $nin: ['inactive', 'suspended'] }
+    }).select('_id loginId').lean();
+    const activeTenantIds = activeTenants.map(t => t._id);
+    const activeTenantLoginIds = activeTenants.map(t => t.loginId).filter(Boolean);
+
+    const pendingRentFilter = {
+      paymentStatus: { $nin: ['paid', 'completed'] },
+      $or: [
+        { tenantId: { $in: activeTenantIds } },
+        { tenantLoginId: { $in: activeTenantLoginIds } }
+      ]
+    };
+
+    const [totalAlerts, pendingRents] = await Promise.all([
+      Rent.countDocuments(pendingRentFilter),
+      Rent.find(pendingRentFilter).limit(10).sort({ createdAt: -1 })
+    ]);
+
+    // --- Revenue calculation (active tenants only) ---
+    const activeIdSet = new Set(activeTenantIds.map(String));
+    const activeLoginSet = new Set(activeTenantLoginIds);
     let totalRevenue = 0;
     rents.forEach(rent => {
+      const tid = rent.tenantId ? String(rent.tenantId) : '';
+      const login = rent.tenantLoginId || '';
+      if (!activeIdSet.has(tid) && !activeLoginSet.has(login)) return;
       const rentAmount = Number(rent.rentAmount || rent.totalDue || 0);
       const commission = Number(rent.commissionAmount || (rentAmount * 0.10));
       const fee = Number(rent.serviceFeeAmount || 50);
       totalRevenue += (commission + fee);
     });
 
-    // Revenue trend (last 5 months)
+    // --- Revenue trend (last 5 months) ---
     const trends = await Rent.aggregate([
       { $group: { 
           _id: { month: { $month: "$createdAt" }, year: { $year: "$createdAt" } }, 
           revenue: { $sum: { $add: [ { $ifNull: ["$commissionAmount", { $multiply: ["$rentAmount", 0.10] }] }, { $ifNull: ["$serviceFeeAmount", 50] } ] } } 
       }},
-      { $sort: { "_id.year": 1, "_id.month": 1 } },
+      { $sort: { "_id.year": -1, "_id.month": -1 } },
       { $limit: 5 }
     ]);
 
-    const formattedTrends = trends.map(t => ({
+    const formattedTrends = trends.reverse().map(t => ({
       name: `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][t._id.month-1]} ${t._id.year}`,
       revenue: Math.round(t.revenue)
+    }));
+
+    // --- Properties by Status (live on website + approval state) ---
+    const propDocs = await Property.find({ isDeleted: { $ne: true } })
+      .select('status isLiveOnWebsite')
+      .lean();
+
+    const statusBuckets = {
+      Live: 0,
+      Active: 0,
+      Pending: 0,
+      Inactive: 0,
+      Blocked: 0
+    };
+
+    propDocs.forEach((p) => {
+      const status = String(p.status || '').toLowerCase();
+      if (status === 'blocked') statusBuckets.Blocked += 1;
+      else if (status === 'pending_approval' || status === 'pending' || status === 'rejected') statusBuckets.Pending += 1;
+      else if (p.isLiveOnWebsite) statusBuckets.Live += 1;
+      else if (status === 'active') statusBuckets.Active += 1;
+      else statusBuckets.Inactive += 1;
+    });
+
+    const statusColorMap = {
+      Live: { label: 'Live on Web', color: '#10B981' },
+      Active: { label: 'Active', color: '#3B82F6' },
+      Pending: { label: 'Pending', color: '#F59E0B' },
+      Inactive: { label: 'Inactive', color: '#94A3B8' },
+      Blocked: { label: 'Blocked', color: '#EF4444' }
+    };
+
+    const totalProps = Object.values(statusBuckets).reduce((s, n) => s + n, 0) || 1;
+    const propertiesByStatus = Object.entries(statusBuckets)
+      .filter(([, count]) => count > 0)
+      .map(([key, count]) => {
+        const mapped = statusColorMap[key];
+        return {
+          name: mapped.label,
+          value: count,
+          color: mapped.color,
+          percent: `${((count / totalProps) * 100).toFixed(1)}%`
+        };
+      });
+
+    // --- Tenants by Type (occupation) aggregation ---
+    const occAgg = await Tenant.aggregate([
+      { $match: { isDeleted: { $ne: true }, status: { $nin: ['inactive', 'suspended'] } } },
+      { $group: { _id: { $ifNull: ['$occupation', 'Not Specified'] }, count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]);
+
+    const occColorPalette = ['#3B82F6', '#10B981', '#F59E0B', '#6366F1', '#EF4444', '#EC4899', '#14B8A6'];
+    const totalTenantCount = occAgg.reduce((s, r) => s + r.count, 0) || 1;
+    const tenantsByType = occAgg.map((r, i) => ({
+      name: r._id || 'Other',
+      value: r.count,
+      color: occColorPalette[i % occColorPalette.length],
+      percent: `${((r.count / totalTenantCount) * 100).toFixed(1)}%`
     }));
 
     res.json({
@@ -147,6 +233,12 @@ router.get('/home/overview', protect, authorize('superadmin'), async (req, res) 
       revenueTrend: formattedTrends.length > 0 ? formattedTrends : [
         { name: 'Jan', revenue: 0 }, { name: 'Feb', revenue: 0 }, { name: 'Mar', revenue: 0 }
       ],
+      propertiesByStatus: propertiesByStatus.length > 0 ? propertiesByStatus : [
+        { name: 'No Data', value: 1, color: '#CBD5E1', percent: '100%' }
+      ],
+      tenantsByType: tenantsByType.length > 0 ? tenantsByType : [
+        { name: 'No Data', value: 1, color: '#CBD5E1', percent: '100%' }
+      ],
       pendingAlerts: pendingRents.map(r => ({
         id: r._id,
         name: r.tenantName || 'Unknown Tenant',
@@ -154,6 +246,11 @@ router.get('/home/overview', protect, authorize('superadmin'), async (req, res) 
         amount: r.rentAmount || 0,
         status: r.paymentStatus,
         overdue: r.createdAt ? Math.floor((Date.now() - new Date(r.createdAt)) / (1000 * 60 * 60 * 24)) : 0
+      })),
+      activities: pendingRents.slice(0, 5).map(r => ({
+        title: r.paymentStatus === 'paid' || r.paymentStatus === 'completed' ? 'Rent Collected' : 'Rent Pending',
+        description: `${r.tenantName || 'Tenant'} · ${r.propertyName || 'Property'} · ₹${r.rentAmount || 0}`,
+        time: r.createdAt ? new Date(r.createdAt).toLocaleDateString('en-IN') : 'Recently',
       }))
     });
   } catch (error) {
@@ -162,14 +259,20 @@ router.get('/home/overview', protect, authorize('superadmin'), async (req, res) 
   }
 });
 
+
 // Property Management Overview
 router.get('/properties/overview', protect, authorize('superadmin'), async (req, res) => {
   try {
-    const [total, approved, pending, rejected] = await Promise.all([
-      Property.countDocuments(),
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
+
+    const [total, approved, pending, rejected, newThisMonth] = await Promise.all([
+      Property.countDocuments({ isDeleted: { $ne: true } }),
       ApprovedProperty.countDocuments(),
-      Property.countDocuments({ status: 'pending' }),
-      Property.countDocuments({ status: 'rejected' })
+      Property.countDocuments({ status: 'pending', isDeleted: { $ne: true } }),
+      Property.countDocuments({ status: 'rejected', isDeleted: { $ne: true } }),
+      Property.countDocuments({ createdAt: { $gte: startOfMonth }, isDeleted: { $ne: true } })
     ]);
 
     res.json({
@@ -179,7 +282,7 @@ router.get('/properties/overview', protect, authorize('superadmin'), async (req,
         approved,
         pending,
         rejected,
-        newThisMonth: 142
+        newThisMonth
       }
     });
   } catch (error) {
@@ -190,6 +293,7 @@ router.get('/properties/overview', protect, authorize('superadmin'), async (req,
 // User Management Overview
 router.get('/users/overview', protect, authorize('superadmin'), async (req, res) => {
   try {
+    const Tenant = require('../models/Tenant');
     const [total, team, owners, tenants] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ role: { $in: ['employee', 'admin', 'superadmin'] } }),
@@ -197,9 +301,62 @@ router.get('/users/overview', protect, authorize('superadmin'), async (req, res)
       User.countDocuments({ role: 'tenant' })
     ]);
 
+    // Fetch recent signups
+    const recentSignups = await User.find({})
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .select('name email role createdAt kycStatus')
+      .lean();
+
+    const recentUsersData = recentSignups.map(u => ({
+      name: u.name || 'N/A',
+      email: u.email || 'N/A',
+      role: u.role === 'owner' ? 'Property Owner' : u.role === 'tenant' ? 'Tenant' : 'Team Member',
+      date: u.createdAt ? new Date(u.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A',
+      status: u.kycStatus === 'verified' ? 'Active' : 'Pending',
+      initial: (u.name || 'U').split(' ').map(n => n[0]).join('').toUpperCase()
+    }));
+
+    // Approvals queue
+    const pendingOwnersCount = await User.countDocuments({ role: 'owner', kycStatus: { $in: ['pending', 'submitted'] } });
+    const pendingTenantsCount = await Tenant.countDocuments({ isDeleted: { $ne: true }, kycStatus: { $in: ['pending', 'submitted'] } });
+    const pendingDocsCount = await Tenant.countDocuments({ isDeleted: { $ne: true }, kycStatus: 'submitted' });
+
+    // KYC Status Counts
+    const [verifiedOwners, verifiedTenants, pendingOwners, pendingTenants, rejectedOwners, rejectedTenants] = await Promise.all([
+      User.countDocuments({ role: 'owner', kycStatus: 'verified' }),
+      Tenant.countDocuments({ isDeleted: { $ne: true }, kycStatus: 'verified' }),
+      User.countDocuments({ role: 'owner', kycStatus: 'pending' }),
+      Tenant.countDocuments({ isDeleted: { $ne: true }, kycStatus: 'pending' }),
+      User.countDocuments({ role: 'owner', kycStatus: 'rejected' }),
+      Tenant.countDocuments({ isDeleted: { $ne: true }, kycStatus: 'rejected' }),
+    ]);
+
+    const kycStatusStats = {
+      verified: verifiedOwners + verifiedTenants,
+      pending: pendingOwners + pendingTenants,
+      rejected: rejectedOwners + rejectedTenants,
+    };
+
     res.json({
       success: true,
-      summary: { total, team, owners, tenants, activeToday: total - 8 }
+      summary: { total, team, owners, tenants, activeToday: team + owners + tenants },
+      userDistributionData: [
+        { name: "Team Members", value: team, color: "#6366F1", percent: total > 0 ? `${((team / total) * 100).toFixed(1)}%` : '0%' },
+        { name: "Property Owners", value: owners, color: "#10B981", percent: total > 0 ? `${((owners / total) * 100).toFixed(1)}%` : '0%' },
+        { name: "Tenants", value: tenants, color: "#3B82F6", percent: total > 0 ? `${((tenants / total) * 100).toFixed(1)}%` : '0%' },
+      ],
+      recentUsersData,
+      pendingApprovals: [
+        { label: "Property Owners", count: pendingOwnersCount, icon: "Building2", color: "green" },
+        { label: "Tenants", count: pendingTenantsCount, icon: "Users", color: "blue" },
+        { label: "Documents", count: pendingDocsCount, icon: "ClipboardList", color: "yellow" },
+      ],
+      kycStatus: [
+        { label: "Verified", count: kycStatusStats.verified, icon: "CheckCircle2", color: "green" },
+        { label: "Pending", count: kycStatusStats.pending, icon: "Clock", color: "yellow" },
+        { label: "Rejected", count: kycStatusStats.rejected, icon: "XCircle", color: "red" },
+      ]
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -229,8 +386,22 @@ router.get('/accounting/overview', protect, authorize('superadmin'), async (req,
       }
     });
 
-    // 2. Unpaid rents & due rent aging
-    const unpaidRents = await Rent.find({ paymentStatus: { $nin: ['paid', 'completed'] } }).lean();
+    // 2. Unpaid rents & due rent aging (active tenants only)
+    const Tenant = require('../models/Tenant');
+    const activeTenants = await Tenant.find({
+      isDeleted: { $ne: true },
+      status: { $nin: ['inactive', 'suspended'] }
+    }).select('_id loginId').lean();
+    const activeTenantIds = activeTenants.map(t => t._id);
+    const activeTenantLoginIds = activeTenants.map(t => t.loginId).filter(Boolean);
+
+    const unpaidRents = await Rent.find({
+      paymentStatus: { $nin: ['paid', 'completed'] },
+      $or: [
+        { tenantId: { $in: activeTenantIds } },
+        { tenantLoginId: { $in: activeTenantLoginIds } }
+      ]
+    }).lean();
     let dueRent = 0;
     let age30 = 0;
     let age60 = 0;
@@ -782,6 +953,17 @@ router.get('/revenue/stats', protect, authorize('superadmin'), async (req, res) 
       trendData.push({ name: 'No Data', revenue: 0, listings: 0 });
     }
 
+    const RefundRequest = require('../models/RefundRequest');
+    const RentInvoice = require('../models/RentInvoice');
+
+    const [invoicesCount, refundsCount] = await Promise.all([
+      RentInvoice.countDocuments(),
+      RefundRequest.countDocuments()
+    ]);
+
+    const payoutsCount = txs.filter(t => t.payout_status === 'Paid').length;
+    const gstCollected = Math.round(commissionEarned * 0.18);
+
     res.json({
       success: true,
       stats: {
@@ -791,7 +973,11 @@ router.get('/revenue/stats', protect, authorize('superadmin'), async (req, res) 
         pendingPayouts,
         paidPayouts,
         walletBalance,
-        totalTransactions: txs.length
+        totalTransactions: txs.length,
+        invoicesCount,
+        payoutsCount,
+        refundsCount,
+        gstCollected
       },
       trend: trendData
     });

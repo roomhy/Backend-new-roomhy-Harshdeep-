@@ -392,11 +392,11 @@ exports.updateRoom = async (req, res) => {
     }
 };
 
-// Delete a room
+// Delete a room (Soft Delete)
 exports.deleteRoom = async (req, res) => {
     try {
         const { roomId } = req.params;
-        const room = await Room.findByIdAndDelete(roomId);
+        const room = await Room.findByIdAndUpdate(roomId, { isDeleted: true }, { new: true });
         if (!room) {
             return res.status(404).json({ success: false, message: "Room not found" });
         }
@@ -408,9 +408,109 @@ exports.deleteRoom = async (req, res) => {
             { $set: { room: null, roomNo: '', bedNo: '' } }
         );
 
-        res.json({ success: true, message: "Room deleted successfully" });
+        res.json({ success: true, message: "Room soft-deleted successfully" });
     } catch (err) {
         console.error("Error deleting room:", err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+// Get all rooms (Super Admin only - paginated, filtered, search)
+exports.getAllRooms = async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
+        const search = req.query.search || '';
+        const propertyFilter = req.query.property || '';
+        const sharingTypeFilter = req.query.sharingType || '';
+
+        // Build search query (excluding soft-deleted rooms)
+        const query = { isDeleted: { $ne: true } };
+
+        if (propertyFilter && propertyFilter !== 'all') {
+            query.property = propertyFilter;
+        }
+
+        if (sharingTypeFilter && sharingTypeFilter !== 'all') {
+            query.sharingType = sharingTypeFilter;
+        }
+
+        if (search) {
+            const searchRegex = new RegExp(search, 'i');
+            
+            // Search in properties first
+            const Property = require('../models/Property');
+            const matchingProperties = await Property.find({
+                $or: [
+                    { title: searchRegex },
+                    { ownerName: searchRegex },
+                    { ownerLoginId: searchRegex }
+                ]
+            }).select('_id').lean();
+            
+            const matchingPropIds = matchingProperties.map(p => p._id);
+
+            query.$or = [
+                { title: searchRegex },
+                { property: { $in: matchingPropIds } }
+            ];
+        }
+
+        const total = await Room.countDocuments(query);
+        const rooms = await Room.find(query)
+            .populate({
+                path: 'property',
+                select: 'title ownerLoginId ownerName address locationCode propertyId visitId'
+            })
+            .skip((page - 1) * limit)
+            .limit(limit)
+            .sort({ createdAt: -1 })
+            .lean();
+
+        // Calculate statistics across all active rooms (overall, not paginated)
+        const allActiveRooms = await Room.find({ isDeleted: { $ne: true } }).lean();
+        
+        let totalRoomsCount = allActiveRooms.length;
+        let vacantRoomsCount = 0;
+        let occupiedRoomsCount = 0;
+        let maintenanceRoomsCount = 0;
+
+        allActiveRooms.forEach(room => {
+            if (!room.isAvailable || room.status === 'inactive') {
+                maintenanceRoomsCount++;
+            } else {
+                const bedsCount = Number(room.beds || 1);
+                // Count bed assignments
+                const assignedCount = Array.isArray(room.bedAssignments)
+                    ? room.bedAssignments.filter(b => b && b.tenantId).length
+                    : 0;
+                if (assignedCount >= bedsCount) {
+                    occupiedRoomsCount++;
+                } else {
+                    vacantRoomsCount++;
+                }
+            }
+        });
+
+        const Property = require('../models/Property');
+        const totalPropertiesCount = await Property.countDocuments({ isDeleted: { $ne: true } });
+
+        res.json({
+            success: true,
+            rooms,
+            total,
+            page,
+            totalPages: Math.ceil(total / limit),
+            stats: {
+                totalRooms: totalRoomsCount,
+                vacantRooms: vacantRoomsCount,
+                occupiedRooms: occupiedRoomsCount,
+                maintenanceRooms: maintenanceRoomsCount,
+                totalProperties: totalPropertiesCount
+            }
+        });
+    } catch (err) {
+        console.error("Error getting all rooms:", err);
         res.status(500).json({ success: false, message: err.message });
     }
 };

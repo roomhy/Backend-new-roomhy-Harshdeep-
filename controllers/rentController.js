@@ -83,6 +83,18 @@ exports.getRentsByOwner = async (req, res) => {
         if (month) query.collectionMonth = month;
         if (status) query.paymentStatus = status;
 
+        const activeTenants = await Tenant.find({
+            isDeleted: { $ne: true },
+            status: { $nin: ['inactive', 'suspended'] }
+        }).select('_id loginId');
+        const activeTenantIds = activeTenants.map(t => t._id);
+        const activeTenantLoginIds = activeTenants.map(t => t.loginId).filter(Boolean);
+
+        query.$or = [
+            { tenantId: { $in: activeTenantIds } },
+            { tenantLoginId: { $in: activeTenantLoginIds } }
+        ];
+
         const rents = await Rent.find(query).sort({ updatedAt: -1 }).populate('tenantId', 'name email phone').populate('propertyId', 'title');
 
         res.json({ success: true, rents });
@@ -102,6 +114,18 @@ exports.getAllRents = async (req, res) => {
         if (status) query.paymentStatus = status;
         if (ownerLoginId) query.ownerLoginId = ownerLoginId;
         if (paymentStatus) query.paymentStatus = paymentStatus;
+
+        const activeTenants = await Tenant.find({
+            isDeleted: { $ne: true },
+            status: { $nin: ['inactive', 'suspended'] }
+        }).select('_id loginId');
+        const activeTenantIds = activeTenants.map(t => t._id);
+        const activeTenantLoginIds = activeTenants.map(t => t.loginId).filter(Boolean);
+
+        query.$or = [
+            { tenantId: { $in: activeTenantIds } },
+            { tenantLoginId: { $in: activeTenantLoginIds } }
+        ];
 
         const rents = await Rent.find(query)
             .sort({ createdAt: -1 })
