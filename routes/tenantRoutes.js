@@ -95,7 +95,7 @@ router.get(
 router.get(
     '/owner/:ownerId',
     protect,
-    authorize('superadmin', 'areamanager', 'owner'),
+    authorize('superadmin', 'areamanager', 'owner', 'employee', 'manager'),
     ownerMatchGuard('ownerId'),
     tenantController.getTenantsByOwner
 );

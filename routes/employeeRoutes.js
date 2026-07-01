@@ -32,6 +32,7 @@ router.post('/login', async (req, res) => {
             success: true,
             requirePasswordReset: emp.requirePasswordReset === true,
             data: {
+                _id: emp._id,
                 loginId: emp.loginId,
                 name: emp.name,
                 role: emp.role,

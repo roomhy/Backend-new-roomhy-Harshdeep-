@@ -157,21 +157,26 @@ exports.getPropertyById = async (req, res) => {
 // Get ALL Properties (For Super Admin & Area Manager lists) with Pagination
 exports.getAllProperties = async (req, res) => {
     try {
+        const filter = { isDeleted: { $ne: true } };
+        if (req.query.ownerLoginId) {
+            filter.ownerLoginId = String(req.query.ownerLoginId).toUpperCase();
+        }
+        
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
         const skip = (page - 1) * limit;
         
         // Run counts in parallel
         const [total, publishedCount, inactiveCount, rejectedCount] = await Promise.all([
-            Property.countDocuments({ isDeleted: { $ne: true } }),
-            Property.countDocuments({ isDeleted: { $ne: true }, $or: [{ isLiveOnWebsite: true }, { status: 'active' }] }),
-            Property.countDocuments({ isDeleted: { $ne: true }, status: 'inactive' }),
-            Property.countDocuments({ isDeleted: { $ne: true }, status: 'blocked' })
+            Property.countDocuments(filter),
+            Property.countDocuments({ ...filter, $or: [{ isLiveOnWebsite: true }, { status: 'active' }] }),
+            Property.countDocuments({ ...filter, status: 'inactive' }),
+            Property.countDocuments({ ...filter, status: 'blocked' })
         ]);
         
         const pendingCount = total - (publishedCount + inactiveCount + rejectedCount);
  
-        const properties = await Property.find({ isDeleted: { $ne: true } })
+        const properties = await Property.find(filter)
             .populate('owner', 'name phone email')
             .sort({ createdAt: -1 })
             .skip(skip)
