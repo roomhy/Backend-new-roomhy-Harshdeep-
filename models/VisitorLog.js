@@ -11,9 +11,24 @@ const visitorLogSchema = new mongoose.Schema(
         purpose:       { type: String, default: 'Social' },
         status: {
             type: String,
-            enum: ['Pre-approved', 'Inside', 'Exited', 'Cancelled'],
+            // 'Pending'/'Approved'/'Rejected' drive the tenant→owner approval workflow.
+            // 'Pre-approved'/'Inside'/'Exited'/'Cancelled' are retained for the gate flows.
+            enum: ['Pending', 'Approved', 'Rejected', 'Pre-approved', 'Inside', 'Exited', 'Cancelled'],
             default: 'Inside'
         },
+        // Stable verification token generated once at creation and NEVER regenerated.
+        // The visitor pass QR encodes a public verify URL built from this token, so the
+        // QR stays identical before and after approval.
+        qrToken:           { type: String, index: true },
+        // Human-readable, unique pass identifier assigned when the owner approves.
+        passId:            { type: String, index: true },
+        // Approval audit trail
+        approvedBy:        { type: String },          // owner display name
+        approvedByLoginId: { type: String, uppercase: true },
+        approvedAt:        { type: Date },
+        rejectedAt:        { type: Date },
+        // The visitor's intended entry time (kept separate from gate entryTime).
+        expectedEntryTime: { type: Date },
         entryTime: { type: Date, default: Date.now },
         exitTime:  { type: Date }
     },
