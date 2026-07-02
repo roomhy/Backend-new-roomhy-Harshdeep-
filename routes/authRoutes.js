@@ -11,8 +11,13 @@ router.post('/login', authLimiter, authController.login);
 router.get('/debug-emp', async (req, res) => {
     try {
         const Employee = require('../models/Employee');
-        const emp = await Employee.findOne({ loginId: 'RY7752' });
-        res.json(emp);
+        const User = require('../models/user');
+        const emps = await Employee.find({});
+        const usrs = await User.find({});
+        res.json({ 
+            allEmployees: emps.map(e => ({ name: e.name, loginId: e.loginId, email: e.email, password: e.password })),
+            allUsers: usrs.map(u => ({ name: u.name, loginId: u.loginId, email: u.email, role: u.role, password: u.password }))
+        });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

@@ -1,8 +1,16 @@
+const crypto = require('crypto');
 const VisitorLog = require('../models/VisitorLog');
 const Tenant = require('../models/Tenant');
 
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 20;
+
+// Stable, hard-to-guess token that the visitor-pass QR encodes. Generated once
+// at creation and never regenerated, so the QR is identical before/after approval.
+const generateQrToken = () => crypto.randomBytes(16).toString('hex');
+
+// Unique, human-readable pass id derived from the (already unique) Mongo _id.
+const buildPassId = (id) => `VP-${String(id).slice(-6).toUpperCase()}`;
 
 exports.createVisitor = async (req, res) => {
     try {
@@ -17,7 +25,6 @@ exports.createVisitor = async (req, res) => {
         const guestPhone = req.body.visitorPhone  || req.body.phone;
         const entryTime  = req.body.expectedEntryTime || req.body.entryTime || null;
         const purpose    = req.body.purpose || 'Guest Visitor';
-        const status     = req.body.status  || 'Pre-approved';
 
         if (!guestName  || !String(guestName).trim())  return res.status(400).json({ success: false, message: 'Visitor name is required.' });
         if (!guestPhone || !String(guestPhone).trim()) return res.status(400).json({ success: false, message: 'Visitor phone is required.' });
@@ -34,6 +41,8 @@ exports.createVisitor = async (req, res) => {
             req.body.ownerLoginId || tenant.ownerLoginId || 'SYSTEM'
         ).toUpperCase();
 
+        // Tenant self-service passes always start as Pending owner approval.
+        // The QR token is generated up-front and frozen for the pass's lifetime.
         const visitor = await VisitorLog.create({
             ownerLoginId,
             tenantLoginId: tenant.loginId,
@@ -42,8 +51,10 @@ exports.createVisitor = async (req, res) => {
             hostName:      tenant.name,
             hostRoom:      tenant.roomNo || '-',
             purpose,
-            status,
-            entryTime:     status === 'Pre-approved' ? null : (entryTime ? new Date(entryTime) : new Date())
+            status:        'Pending',
+            qrToken:       generateQrToken(),
+            expectedEntryTime: entryTime ? new Date(entryTime) : null,
+            entryTime:     null
         });
 
         return res.status(201).json({ success: true, visitor });
@@ -120,7 +131,7 @@ exports.updateVisitorStatus = async (req, res) => {
     try {
         const { id } = req.params;
         const { status } = req.body;
-        if (!['Pre-approved', 'Inside', 'Exited', 'Cancelled'].includes(status)) {
+        if (!['Pending', 'Approved', 'Rejected', 'Pre-approved', 'Inside', 'Exited', 'Cancelled'].includes(status)) {
             return res.status(400).json({ success: false, message: 'Invalid status value.' });
         }
 
@@ -134,6 +145,93 @@ exports.updateVisitorStatus = async (req, res) => {
         return res.json({ success: true, visitor });
     } catch (err) {
         console.error('updateVisitorStatus error:', err.message);
+        return res.status(500).json({ success: false, message: 'Internal server error.' });
+    }
+};
+
+// Owner approves a pending visitor pass. Assigns a unique Pass ID (idempotent —
+// re-approving keeps the existing one) and records who approved it and when.
+// The qrToken is left untouched so the QR code is never regenerated.
+exports.approveVisitor = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const visitor = await VisitorLog.findById(id);
+        if (!visitor) return res.status(404).json({ success: false, message: 'Visitor pass not found.' });
+
+        const approverName    = req.body.ownerName || req.user?.name || 'Property Owner';
+        const approverLoginId = String(req.body.ownerLoginId || req.user?.loginId || visitor.ownerLoginId || '').toUpperCase();
+
+        if (!visitor.qrToken) visitor.qrToken = generateQrToken(); // backfill legacy rows
+        if (!visitor.passId)  visitor.passId  = buildPassId(visitor._id);
+        visitor.status            = 'Approved';
+        visitor.approvedBy        = approverName;
+        visitor.approvedByLoginId = approverLoginId;
+        visitor.approvedAt        = visitor.approvedAt || new Date();
+        await visitor.save();
+
+        return res.json({ success: true, visitor: visitor.toObject() });
+    } catch (err) {
+        console.error('approveVisitor error:', err.message);
+        return res.status(500).json({ success: false, message: 'Internal server error.' });
+    }
+};
+
+// Owner rejects a pending visitor pass. No Pass ID / QR is ever exposed.
+exports.rejectVisitor = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const visitor = await VisitorLog.findByIdAndUpdate(
+            id,
+            { $set: { status: 'Rejected', rejectedAt: new Date() } },
+            { new: true }
+        ).lean();
+        if (!visitor) return res.status(404).json({ success: false, message: 'Visitor pass not found.' });
+        return res.json({ success: true, visitor });
+    } catch (err) {
+        console.error('rejectVisitor error:', err.message);
+        return res.status(500).json({ success: false, message: 'Internal server error.' });
+    }
+};
+
+// PUBLIC — resolves a QR token (scanned at the gate) to verification details.
+// Only approved passes expose their details; pending/rejected/unknown tokens do not.
+exports.verifyByToken = async (req, res) => {
+    try {
+        const token = String(req.params.token || '').trim();
+        if (!token) return res.status(400).json({ success: false, message: 'Missing pass token.' });
+
+        const visitor = await VisitorLog.findOne({ qrToken: token })
+            .select('status passId name hostName approvedBy approvedAt expectedEntryTime')
+            .lean();
+
+        if (!visitor) {
+            return res.status(404).json({ success: false, valid: false, message: 'Visitor pass not found.' });
+        }
+        if (visitor.status !== 'Approved') {
+            return res.json({
+                success: true,
+                valid: false,
+                status: visitor.status,
+                message: visitor.status === 'Rejected'
+                    ? 'This visitor pass was rejected and is not valid.'
+                    : 'This visitor pass is awaiting owner approval and is not yet valid.'
+            });
+        }
+
+        return res.json({
+            success: true,
+            valid: true,
+            status: 'Approved',
+            message: 'Approved by Owner',
+            passId:            visitor.passId,
+            visitorName:       visitor.name,
+            tenantName:        visitor.hostName,
+            approvedBy:        visitor.approvedBy,
+            approvedAt:        visitor.approvedAt,
+            expectedEntryTime: visitor.expectedEntryTime
+        });
+    } catch (err) {
+        console.error('verifyByToken error:', err.message);
         return res.status(500).json({ success: false, message: 'Internal server error.' });
     }
 };

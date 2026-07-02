@@ -35,7 +35,7 @@ router.get('/diagnostic-db', protect, authorize('superadmin'), async (req, res) 
   }
 });
 
-router.get('/stats', protect, authorize('superadmin'), async (req, res) => {
+router.get('/stats', protect, authorize('superadmin', 'areamanager', 'employee', 'manager'), async (req, res) => {
   try {
     const [
       totalProperties,
