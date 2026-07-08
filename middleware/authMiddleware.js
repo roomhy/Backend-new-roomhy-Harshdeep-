@@ -16,6 +16,9 @@ exports.protect = async (req, res, next) => {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         let user = await User.findById(decoded.id).select('-password');
 
+        console.log(`[AUTH DEBUG] Request URL: ${req.method} ${req.originalUrl}`);
+        console.log(`[AUTH DEBUG] Decoded ID: ${decoded.id}, Role from token: ${decoded.role}`);
+
         if (!user) {
             const AreaManager = require('../models/AreaManager');
             user = await AreaManager.findById(decoded.id).select('-password');
@@ -31,9 +34,14 @@ exports.protect = async (req, res, next) => {
             }
         }
 
-        if (!user) return res.status(401).json({ message: 'Not authorized, user not found' });
+        if (!user) {
+            console.log(`[AUTH DEBUG] User not found for ID: ${decoded.id}`);
+            return res.status(401).json({ message: 'Not authorized, user not found' });
+        }
+        
         // Normalize 'propertyowner' → 'owner' so all role checks are consistent
         if (user.role === 'propertyowner') user.role = 'owner';
+        console.log(`[AUTH DEBUG] Resolved User: ${user.loginId || user.email}, Final Role: ${user.role}`);
         req.user = user;
         next();
     } catch (err) {
@@ -46,7 +54,11 @@ exports.authorize = (...roles) => {
     return (req, res, next) => {
         if (!req.user) return res.status(401).json({ message: 'Not authenticated' });
         const expanded = roles.includes('superadmin') ? [...roles, 'admin'] : roles;
-        if (!expanded.includes(req.user.role)) return res.status(403).json({ message: 'Forbidden' });
+        console.log(`[AUTH DEBUG] Path: ${req.method} ${req.originalUrl} | Required: ${roles.join(',')} | User Role: ${req.user.role}`);
+        if (!expanded.includes(req.user.role)) {
+            console.log(`[AUTH DEBUG] Forbidden: User role ${req.user.role} not in expanded roles [${expanded.join(',')}]`);
+            return res.status(403).json({ message: 'Forbidden' });
+        }
         next();
     };
 };
