@@ -45,6 +45,12 @@ exports.getOwnerComplaints = async (req, res) => {
         // Use exact uppercase match — all loginIds stored uppercase, so this hits the index
         const normalizedId = String(ownerLoginId || '').trim().toUpperCase();
 
+        // Ensure we have an authenticated caller before enforcing owner rules.
+        // If auth middleware failed to set req.user, deny access explicitly.
+        if (!req.user || !req.user.role) {
+            return res.status(401).json({ success: false, message: 'Unauthorized' });
+        }
+
         // Ownership enforcement: owners may only access their own complaints.
         // superadmin and areamanager have unrestricted cross-owner visibility.
         if (req.user.role === 'owner') {

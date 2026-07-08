@@ -122,6 +122,56 @@ exports.createRoom = async (req, res) => {
     }
 };
 
+exports.bulkCreateRooms = async (req, res) => {
+    try {
+        const { propertyId, rooms } = req.body;
+        const user = req.user;
+        if (!user) return res.status(401).json({ message: 'Auth required' });
+        if (user.role !== 'owner') return res.status(403).json({ message: 'Only owners can add rooms' });
+        if (!propertyId) return res.status(400).json({ message: 'Property ID is required' });
+        if (!Array.isArray(rooms) || rooms.length === 0) return res.status(400).json({ message: 'Rooms array is required' });
+
+        const property = await Property.findById(propertyId).lean();
+        if (!property) return res.status(404).json({ message: 'Property not found' });
+        
+        const ownerMatches =
+            (property.owner && property.owner.toString() === user._id.toString()) ||
+            (property.ownerLoginId && String(property.ownerLoginId).toUpperCase() === String(user.loginId || '').toUpperCase());
+        if (!ownerMatches) {
+            return res.status(403).json({ message: 'You can only add rooms to your assigned property' });
+        }
+
+        const roomsToInsert = rooms.map(roomData => ({
+            property: propertyId,
+            title: String(roomData.title || roomData.roomNo || '').trim(),
+            type: String(roomData.type || roomData.roomType || 'AC').trim(),
+            beds: Number.isFinite(Number(roomData.beds || roomData.capacity || 1)) ? Number(roomData.beds || roomData.capacity || 1) : 1,
+            price: Number.isFinite(Number(roomData.price || roomData.rent || 0)) ? Number(roomData.price || roomData.rent || 0) : 0,
+            unitType: roomData.unitType || 'Room',
+            floor: roomData.floor || '',
+            sharingType: roomData.sharingType || '',
+            remarks: roomData.remarks || '',
+            isAvailable: roomData.isAvailable !== undefined ? roomData.isAvailable : true,
+            facilities: roomData.facilities || [],
+            roomTypeFeatures: roomData.roomTypeFeatures || [],
+            media: roomData.media || [],
+            electricity: {
+                unitCost: Number(roomData.electricityUnitCost) || 0,
+                readings: []
+            },
+            createdBy: user._id,
+            status: 'inactive'
+        }));
+
+        const insertedRooms = await Room.insertMany(roomsToInsert);
+
+        return res.status(201).json({ success: true, rooms: insertedRooms });
+    } catch (err) {
+        console.error('bulkCreateRooms error:', err);
+        return res.status(500).json({ message: 'Server error' });
+    }
+};
+
 
 
 

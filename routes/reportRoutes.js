@@ -367,4 +367,375 @@ router.get('/seed-test/:ownerLoginId', async (req, res) => {
     }
 });
 
+/**
+ * GET /api/reports/demand/:ownerLoginId
+ * Fetch demand analytics and price optimization suggestions for an owner's properties
+ */
+router.get('/demand/:ownerLoginId', async (req, res) => {
+    try {
+        const { ownerLoginId } = req.params;
+        const Property = require('../models/Property');
+        const Enquiry = require('../models/Enquiry');
+        const BookingRequest = require('../models/BookingRequest');
+        const mongoose = require('mongoose');
+
+        // Find all active properties for the owner
+        const properties = await Property.find({ ownerLoginId: String(ownerLoginId).trim().toUpperCase(), isDeleted: { $ne: true } }).lean();
+
+        if (!properties || properties.length === 0) {
+            return res.status(200).json({ success: true, properties: [] });
+        }
+
+        const propertyIds = properties.map(p => String(p._id));
+        const propertyNames = properties.map(p => p.title);
+
+        // Fetch all enquiries, bookings, reviews, complaints, and rents in parallel for these properties
+        const [enquiries, bookings, reviews, complaints, rents] = await Promise.all([
+            Enquiry.find({ 
+                ownerLoginId: String(ownerLoginId).trim().toUpperCase(), 
+                $or: [
+                    { propertyId: { $in: propertyIds } },
+                    { propertyName: { $in: propertyNames } }
+                ]
+            }).lean(),
+            BookingRequest.find({
+                owner_id: String(ownerLoginId).trim().toUpperCase(),
+                $or: [
+                    { property_id: { $in: propertyIds } },
+                    { property_name: { $in: propertyNames } }
+                ]
+            }).lean(),
+            mongoose.models.Review ? mongoose.model('Review').find({ propertyId: { $in: propertyIds } }).lean() : Promise.resolve([]),
+            mongoose.models.Complaint ? mongoose.model('Complaint').find({ propertyId: { $in: propertyIds } }).lean() : Promise.resolve([]),
+            mongoose.models.Rent ? mongoose.model('Rent').find({ propertyId: { $in: propertyIds } }).lean() : Promise.resolve([])
+        ]);
+
+        // Map data per property
+        const demandReport = properties.map(p => {
+            const pIdStr = String(p._id);
+            const pName = p.title;
+
+            // Filter data for this property
+            const pEnquiries = enquiries.filter(e => String(e.propertyId) === pIdStr || e.propertyName === pName);
+            const pBookings = bookings.filter(b => String(b.property_id) === pIdStr || b.property_name === pName);
+            const pReviews = reviews.filter(r => String(r.propertyId) === pIdStr);
+            const pComplaints = complaints.filter(c => String(c.propertyId) === pIdStr && ['Open', 'Pending'].includes(c.status));
+            const pRents = rents.filter(r => String(r.propertyId) === pIdStr && r.paymentStatus === 'overdue');
+
+            const views = p.views || 0;
+            const clicks = p.clicks || 0;
+            const inquiryCount = pEnquiries.length;
+            const bookingCount = pBookings.length;
+            
+            // Occupancy
+            const totalBeds = p.bedCount || p.totalRooms || 1;
+            const occupiedBeds = p.occupiedBeds || 0;
+            const occupancyPct = Math.round((occupiedBeds / totalBeds) * 100);
+
+            // CTR
+            const ctr = views > 0 ? Number(((clicks / views) * 100).toFixed(1)) : 0;
+            // Lead Conversion (inquiries / views)
+            const leadConv = views > 0 ? Number(((inquiryCount / views) * 100).toFixed(1)) : 0;
+            // Booking Conversion
+            const bookingConv = inquiryCount > 0 ? Number(((bookingCount / inquiryCount) * 100).toFixed(1)) : 0;
+
+            // Calculate Property Health Grade
+            const occScore = occupancyPct * 0.4;
+            const avgRating = pReviews.length > 0 ? (pReviews.reduce((sum, r) => sum + (r.rating || 0), 0) / pReviews.length) : 4.0;
+            const reviewScore = (avgRating / 5) * 20;
+            const complaintScore = Math.max(0, 20 - (pComplaints.length * 4));
+            const rentScore = Math.max(0, 20 - (pRents.length * 5));
+            const totalScore = Math.round(occScore + reviewScore + complaintScore + rentScore);
+
+            let healthGrade = 'B';
+            if (totalScore >= 80) healthGrade = 'A';
+            else if (totalScore >= 60) healthGrade = 'B';
+            else if (totalScore >= 40) healthGrade = 'C';
+            else healthGrade = 'D';
+
+            // Revenue Forecasting
+            const rentVal = p.monthlyRent || 0;
+            const forecastedRevenue = occupiedBeds * rentVal;
+
+            // Classify Demand Status & Recommendations
+            let status = 'Stable';
+            let recommendation = 'Pricing and metrics are balanced. Continue maintaining quality and collect reviews.';
+            let actionType = 'none'; // 'optimize' | 'none'
+            let suggestionValue = null;
+
+            if (occupancyPct >= 80) {
+                status = '🔥 High Demand';
+                recommendation = `High occupancy (${occupancyPct}%). The property is in hot demand. You can consider a slight 5-8% increase in rent for new listings to increase yield.`;
+                actionType = 'optimize';
+                suggestionValue = Math.round(rentVal * 1.05); // suggest 5% increase
+            } else if (occupancyPct < 50) {
+                if (views > 50 && inquiryCount === 0) {
+                    status = '📢 High Interest, No Leads';
+                    recommendation = `Good visitor views (${views}) but zero inquiries. The pricing (₹${rentVal}) might be too high for this area or photos are unappealing. We recommend lowering the monthly rent by 5-10% to boost conversions.`;
+                    actionType = 'optimize';
+                    suggestionValue = Math.round(rentVal * 0.92); // suggest ~8% decrease
+                } else if (views < 20) {
+                    status = '⚠️ Low Visibility';
+                    recommendation = `Very low views (${views}). Potential tenants are not seeing your property. Recommend promoting it as a Featured Listing or updating photos to get higher search results.`;
+                    actionType = 'none';
+                } else {
+                    status = '⚠️ Low Demand';
+                    recommendation = `Low occupancy and low inquiries. We recommend lowering the monthly rent by 5-10% to attract budget-conscious tenants.`;
+                    actionType = 'optimize';
+                    suggestionValue = Math.round(rentVal * 0.90); // suggest 10% decrease
+                }
+            } else {
+                status = '🟢 Stable';
+            }
+
+            return {
+                id: p._id,
+                title: p.title,
+                city: p.city || 'GEN',
+                locality: p.locality || 'N/A',
+                monthlyRent: rentVal,
+                discount: p.discount || 0,
+                views,
+                clicks,
+                inquiryCount,
+                bookingCount,
+                occupancyPct,
+                ctr,
+                leadConv,
+                bookingConv,
+                status,
+                recommendation,
+                actionType,
+                suggestionValue,
+                healthGrade,
+                healthScore: totalScore,
+                forecastedRevenue,
+                featuredImage: p.featuredImage || (p.images && p.images[0]) || 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?w=400&h=300&fit=crop'
+            };
+        });
+
+        return res.status(200).json({ success: true, properties: demandReport });
+    } catch (err) {
+        console.error('Error fetching demand report:', err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+/**
+ * GET /api/reports/superadmin/demand
+ * Fetch global property demand stats for superadmin
+ */
+const { protect, authorize } = require('../middleware/authMiddleware');
+router.get('/superadmin/demand', protect, authorize('superadmin'), async (req, res) => {
+    try {
+        const Property = require('../models/Property');
+        const Enquiry = require('../models/Enquiry');
+        const BookingRequest = require('../models/BookingRequest');
+
+        // Fetch all properties, enquiries, and bookings
+        const [properties, enquiries, bookings] = await Promise.all([
+            Property.find({ isDeleted: { $ne: true } }).lean(),
+            Enquiry.find().lean(),
+            BookingRequest.find().lean()
+        ]);
+
+        const demandReport = properties.map(p => {
+            const pIdStr = String(p._id);
+            const pName = p.title;
+
+            // Filter enquiries and bookings
+            const pEnquiries = enquiries.filter(e => String(e.propertyId) === pIdStr || e.propertyName === pName);
+            const pBookings = bookings.filter(b => String(b.property_id) === pIdStr || b.property_name === pName);
+
+            const views = p.views || 0;
+            const clicks = p.clicks || 0;
+            const inquiryCount = pEnquiries.length;
+            const bookingCount = pBookings.length;
+
+            const totalBeds = p.bedCount || p.totalRooms || 1;
+            const occupiedBeds = p.occupiedBeds || 0;
+            const occupancyPct = Math.round((occupiedBeds / totalBeds) * 100);
+
+            // Compute Grade (simplistic calculation for global report)
+            let healthGrade = 'B';
+            if (occupancyPct >= 80) healthGrade = 'A';
+            else if (occupancyPct >= 50) healthGrade = 'B';
+            else if (occupancyPct >= 30) healthGrade = 'C';
+            else healthGrade = 'D';
+
+            let status = 'Stable';
+            if (occupancyPct >= 80) {
+                status = '🔥 High Demand';
+            } else if (occupancyPct < 50) {
+                if (views > 50 && inquiryCount === 0) {
+                    status = '📢 High Interest, No Leads';
+                } else if (views < 20) {
+                    status = '⚠️ Low Visibility';
+                } else {
+                    status = '⚠️ Low Demand';
+                }
+            } else {
+                status = '🟢 Stable';
+            }
+
+            return {
+                id: p._id,
+                title: p.title,
+                ownerLoginId: p.ownerLoginId,
+                ownerName: p.ownerName,
+                ownerPhone: p.ownerPhone,
+                city: p.city || 'Unknown',
+                locality: p.locality || 'Unknown',
+                monthlyRent: p.monthlyRent || 0,
+                views,
+                clicks,
+                inquiryCount,
+                bookingCount,
+                occupancyPct,
+                status,
+                healthGrade
+            };
+        });
+
+        res.json({ success: true, properties: demandReport });
+    } catch (err) {
+        console.error('Error fetching global demand report:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+/**
+ * GET /api/reports/locality-analytics
+ * Fetch global locality-wise demand and metrics for Area Demand Heatmap
+ */
+router.get('/locality-analytics', async (req, res) => {
+    try {
+        const Property = require('../models/Property');
+        const Enquiry = require('../models/Enquiry');
+
+        const [properties, enquiries] = await Promise.all([
+            Property.find({ isDeleted: { $ne: true } }).lean(),
+            Enquiry.find().lean()
+        ]);
+
+        const localityMap = {};
+
+        properties.forEach(p => {
+            const locality = p.locality || 'Other';
+            const city = p.city || 'Unknown';
+            const key = `${locality}, ${city}`;
+
+            if (!localityMap[key]) {
+                localityMap[key] = {
+                    locality,
+                    city,
+                    totalProperties: 0,
+                    totalBeds: 0,
+                    occupiedBeds: 0,
+                    totalViews: 0,
+                    totalRent: 0,
+                    propertyCountWithRent: 0,
+                    inquiryCount: 0
+                };
+            }
+
+            const locData = localityMap[key];
+            locData.totalProperties++;
+            locData.totalBeds += (p.bedCount || p.totalRooms || 0);
+            locData.occupiedBeds += (p.occupiedBeds || 0);
+            locData.totalViews += (p.views || 0);
+            if (p.monthlyRent) {
+                locData.totalRent += p.monthlyRent;
+                locData.propertyCountWithRent++;
+            }
+        });
+
+        // Add inquiry count per locality
+        enquiries.forEach(e => {
+            const city = e.location || 'Unknown';
+            for (const key of Object.keys(localityMap)) {
+                if (key.toLowerCase().includes(city.toLowerCase())) {
+                    localityMap[key].inquiryCount++;
+                }
+            }
+        });
+
+        const report = Object.values(localityMap).map(loc => {
+            const occupancyPct = loc.totalBeds > 0 ? Math.round((loc.occupiedBeds / loc.totalBeds) * 100) : 0;
+            const avgRent = loc.propertyCountWithRent > 0 ? Math.round(loc.totalRent / loc.propertyCountWithRent) : 0;
+
+            let status = 'Medium Demand';
+            if (occupancyPct >= 80 || loc.inquiryCount > 10) {
+                status = 'High Demand';
+            } else if (occupancyPct < 40) {
+                status = 'Low Demand';
+            }
+
+            return {
+                locality: loc.locality,
+                city: loc.city,
+                totalProperties: loc.totalProperties,
+                occupancyPct,
+                avgRent,
+                inquiryCount: loc.inquiryCount,
+                views: loc.totalViews,
+                status
+            };
+        });
+
+        res.json({ success: true, localities: report });
+    } catch (err) {
+        console.error('Error generating locality analytics:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+/**
+ * POST /api/reports/bulk-rent-update
+ * Bulk update rent for selected properties (Superadmin action)
+ */
+router.post('/bulk-rent-update', protect, authorize('superadmin'), async (req, res) => {
+    try {
+        const { propertyIds, type, amount } = req.body;
+        
+        if (!propertyIds || !Array.isArray(propertyIds) || propertyIds.length === 0) {
+            return res.status(400).json({ success: false, message: 'Invalid or empty propertyIds array' });
+        }
+        if (!type || amount === undefined || isNaN(Number(amount))) {
+            return res.status(400).json({ success: false, message: 'Invalid update parameters' });
+        }
+
+        const Property = require('../models/Property');
+        const ApprovedProperty = require('../models/ApprovedProperty');
+
+        const properties = await Property.find({ _id: { $in: propertyIds } });
+        
+        for (const p of properties) {
+            let newRent = p.monthlyRent || 0;
+            if (type === 'percentage') {
+                newRent = Math.round(newRent * (1 + Number(amount) / 100));
+            } else {
+                newRent = Math.round(newRent + Number(amount));
+            }
+            
+            p.monthlyRent = Math.max(0, newRent);
+            await p.save();
+
+            // Sync with ApprovedProperty
+            try {
+                // Direct update to ApprovedProperty
+                await ApprovedProperty.findOneAndUpdate(
+                    { propertyId: p._id.toString() },
+                    { $set: { 'propertyInfo.rent': p.monthlyRent } }
+                );
+            } catch (_) {}
+        }
+
+        res.json({ success: true, message: `Successfully updated rent for ${properties.length} properties.` });
+    } catch (err) {
+        console.error('Bulk rent update error:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 module.exports = router;

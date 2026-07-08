@@ -222,6 +222,139 @@ async function sendReminder(req, res) {
   }
 }
 
+// ─── POST /api/rent-collection/invoices/remind/bulk ──────────────────────────
+async function sendBulkReminders(req, res) {
+  try {
+    const { invoiceIds } = req.body;
+    if (!Array.isArray(invoiceIds) || invoiceIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'No invoices provided' });
+    }
+
+    const ownerId = req.user._id;
+    const invoices = await RentInvoice.find({ _id: { $in: invoiceIds }, ownerId }).lean();
+    
+    let sentCount = 0;
+    let failedCount = 0;
+    const errors = [];
+
+    // Pre-fetch owner info to avoid querying in loop
+    const ownerLoginId = req.user.loginId;
+    const CheckinRecord = require('../models/CheckinRecord');
+    const [ownerDoc, checkinDoc] = await Promise.all([
+      ownerLoginId ? Owner.findOne({ loginId: ownerLoginId })
+        .select('checkinUpiId checkinBankAccountNumber checkinIfscCode checkinBankName checkinBranchName checkinAccountHolderName')
+        .lean() : null,
+      ownerLoginId ? CheckinRecord.findOne({ role: 'owner', loginId: ownerLoginId }).lean() : null,
+    ]);
+    const _cp        = checkinDoc?.ownerProfile?.payment || {};
+    const _ownerUpi    = ownerDoc?.checkinUpiId             || _cp.upiId             || '';
+    const _ownerAccNum = ownerDoc?.checkinBankAccountNumber || _cp.bankAccountNumber  || '';
+    const _ownerIfsc   = ownerDoc?.checkinIfscCode          || _cp.ifscCode           || '';
+    const _ownerBank   = ownerDoc?.checkinBankName          || '';
+    const _ownerHolder = ownerDoc?.checkinAccountHolderName || _cp.accountHolderName  || '';
+
+    const { sendWhatsAppTemplate, getMailerConfig, isWhatsAppConfigured, normalizePhoneNumber, sendWhatsAppMessage } = require('../utils/mailer');
+    const cfg = getMailerConfig();
+    const waConfigured = isWhatsAppConfigured(cfg);
+
+    for (const invoice of invoices) {
+      try {
+        const config    = await getEffectiveConfig(invoice.ownerId, invoice.propertyId, invoice.unitId);
+        const penalties = calculatePenalties(invoice, config);
+        const tenantDoc = await Tenant.findById(invoice.tenantId).select('name email phone').lean();
+
+        const [_yr, _mo] = (invoice.billingMonth || '').split('-');
+        const billingMonthFormatted = (_yr && _mo)
+          ? new Date(parseInt(_yr), parseInt(_mo) - 1).toLocaleString('en', { month: 'long' }) + ' ' + _yr
+          : invoice.billingMonth || '';
+
+        const payload = {
+          tenantEmail:  tenantDoc?.email || invoice.tenantEmail || '',
+          tenantName:   tenantDoc?.name  || invoice.tenantName  || '',
+          tenantPhone:  tenantDoc?.phone || invoice.tenantPhone || '',
+          billingMonth: invoice.billingMonth,
+          billingMonthFormatted,
+          dueDate: invoice.dueDate
+            ? new Date(invoice.dueDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+            : '',
+          rentAmount:   invoice.rentAmount,
+          totalPenalty: penalties.totalPenalty,
+          daysSinceDue: penalties.daysSinceDue,
+          electricityBill:          invoice.electricityBill          || 0,
+          electricityUnitsConsumed: invoice.electricityUnitsConsumed || 0,
+          electricityUnitCost:      invoice.electricityBill > 0 && invoice.electricityUnitsConsumed > 0
+                                      ? Math.round(invoice.electricityBill / invoice.electricityUnitsConsumed)
+                                      : 0,
+          totalDue: penalties.totalDue + (invoice.electricityBill || 0),
+          ownerUpiId:         _ownerUpi,
+          ownerBankName:      _ownerBank,
+          ownerAccountHolder: _ownerHolder,
+          ownerAccountNumber: _ownerAccNum,
+          ownerIfscCode:      _ownerIfsc,
+        };
+
+        if (!payload.tenantEmail || !payload.tenantEmail.includes('@')) {
+          await RentAuditLog.create({
+            action:    'CONTACT_INFO_MISSING',
+            invoiceId: invoice._id,
+            tenantId:  invoice.tenantId,
+            ownerId:   invoice.ownerId,
+            meta: { reason: 'tenant_email_missing', channel: 'email', trigger: 'bulk_reminder' },
+          }).catch(() => {});
+          failedCount++;
+          errors.push(`Missing email for ${payload.tenantName}`);
+          continue;
+        }
+
+        // Send email
+        await sendReminderEmailDirect(payload.tenantEmail, payload, penalties.phase);
+
+        // Send WhatsApp
+        try {
+          const phone = payload.tenantPhone ? normalizePhoneNumber(payload.tenantPhone, cfg.whatsappDefaultCountryCode) : '';
+          if (waConfigured && phone) {
+            const phase = penalties.phase;
+            const amount = phase === 1 ? String(payload.rentAmount || 0) : String(payload.totalDue || 0);
+            const params = [
+              { name: 'tenant_name',   value: payload.tenantName            || 'Tenant' },
+              { name: 'property_name', value: payload.billingMonthFormatted || payload.billingMonth || 'this month' },
+              { name: 'due_date',      value: payload.dueDate               || 'as scheduled' },
+              { name: 'amount',        value: amount },
+            ];
+            const waSent = await sendWhatsAppTemplate(phone, 'roomhy_rent_due_reminder', 'en', params, cfg);
+            if (waSent) {
+              const payLines = [];
+              if (payload.ownerUpiId)         payLines.push(`📱 *UPI ID:* ${payload.ownerUpiId}`);
+              if (payload.ownerAccountNumber) {
+                payLines.push(`🏦 *Bank Transfer:*`);
+                if (payload.ownerBankName)      payLines.push(`   Bank: ${payload.ownerBankName}`);
+                if (payload.ownerAccountHolder) payLines.push(`   A/c Holder: ${payload.ownerAccountHolder}`);
+                payLines.push(`   A/c No: ${payload.ownerAccountNumber}`);
+                if (payload.ownerIfscCode)      payLines.push(`   IFSC: ${payload.ownerIfscCode}`);
+              }
+              if (payLines.length) {
+                const payMsg = `💳 *Complete Your Payment*\n\n${payLines.join('\n')}\n\nPlease confirm once payment is done 🙏`;
+                sendWhatsAppMessage(phone, payMsg, cfg).catch(() => {});
+              }
+            }
+          }
+        } catch (waErr) {
+          console.warn('[sendBulkReminders] WhatsApp failed for', payload.tenantName, waErr.message);
+        }
+
+        sentCount++;
+      } catch (err) {
+        failedCount++;
+        errors.push(`Failed for invoice ${invoice._id}: ${err.message}`);
+      }
+    }
+
+    res.json({ success: true, sentCount, failedCount, errors });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+}
+
 // ─── PATCH /api/rent-collection/invoices/:id/waive ───────────────────────────
 async function waivePenaltyHandler(req, res) {
   try {
@@ -640,6 +773,7 @@ module.exports = {
   previewPenaltyCalculation,
   recordPaymentHandler,
   sendReminder,
+  sendBulkReminders,
   waivePenaltyHandler,
   getDashboard,
   listInvoices,

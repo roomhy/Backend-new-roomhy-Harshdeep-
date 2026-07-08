@@ -106,3 +106,53 @@ exports.syncTenantAttendance = async (req, res) => {
         res.status(500).json({ success: false, message: 'Server error' });
     }
 }
+
+// Bulk update tenant attendance
+exports.bulkUpdateTenantStatus = async (req, res) => {
+    try {
+        const { ownerLoginId, date, status, tenantIds, tenantDataList } = req.body;
+        if (!ownerLoginId || !date || !status || (!tenantIds && !tenantDataList)) {
+            return res.status(400).json({ success: false, message: 'Missing required fields' });
+        }
+
+        const finalDate = date || new Date().toISOString().split('T')[0];
+        const bulkOps = [];
+
+        // Support passing either an array of tenantIds or tenantDataList (objects with id, name, roomNo)
+        const tenants = tenantDataList || (tenantIds ? tenantIds.map(id => ({ id })) : []);
+
+        for (const t of tenants) {
+            let finalTenantId = t.id || t.tenantId || t._id;
+            let finalTenantName = t.name || t.tenantName || 'Unknown';
+            let finalRoomNo = t.roomNo || 'N/A';
+
+            // We use upsert for each tenant
+            bulkOps.push({
+                updateOne: {
+                    filter: { tenantId: finalTenantId, date: finalDate },
+                    update: {
+                        $set: {
+                            ownerLoginId: String(ownerLoginId).toUpperCase(),
+                            tenantId: finalTenantId,
+                            tenantName: finalTenantName,
+                            roomNo: finalRoomNo,
+                            status: status,
+                            date: finalDate,
+                            lastScanTime: new Date()
+                        }
+                    },
+                    upsert: true
+                }
+            });
+        }
+
+        if (bulkOps.length > 0) {
+            await TenantAttendance.bulkWrite(bulkOps);
+        }
+
+        res.json({ success: true, message: `Updated ${bulkOps.length} records to ${status}` });
+    } catch (err) {
+        console.error("Bulk Update Tenant Status Error:", err);
+        res.status(500).json({ success: false, message: err.message || 'Server error' });
+    }
+};

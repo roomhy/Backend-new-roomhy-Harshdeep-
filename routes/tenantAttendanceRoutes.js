@@ -11,5 +11,6 @@ router.post('/', tenantAttendanceController.updateTenantStatus);
 router.get('/owner/:ownerLoginId', tenantAttendanceController.getOwnerTenantAttendance);
 router.post('/update', tenantAttendanceController.updateTenantStatus);
 router.post('/sync', tenantAttendanceController.syncTenantAttendance);
+router.post('/bulk', tenantAttendanceController.bulkUpdateTenantStatus);
 
 module.exports = router;

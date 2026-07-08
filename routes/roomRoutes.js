@@ -5,6 +5,7 @@ const { protect, authorize } = require('../middleware/authMiddleware');
 
 // Owners add rooms
 router.post('/', protect, authorize('owner'), roomController.createRoom);
+router.post('/bulk', protect, authorize('owner'), roomController.bulkCreateRooms);
 
 // Get rooms by property
 router.get('/property/:propertyId', roomController.getRoomsByProperty);

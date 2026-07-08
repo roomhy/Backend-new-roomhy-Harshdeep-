@@ -14,6 +14,7 @@ router.post('/invoices/generate',    ctrl.generateInvoices);
 router.get('/invoices',              ctrl.listInvoices);
 router.get('/invoices/:id',          ctrl.getInvoiceById);
 router.post('/invoices/:id/remind',  ctrl.sendReminder);
+router.post('/invoices/remind/bulk', ctrl.sendBulkReminders);
 router.patch('/invoices/:id/waive',  ctrl.waivePenaltyHandler);
 
 // Payments

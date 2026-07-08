@@ -134,6 +134,26 @@ router.get('/', protect, authorize('superadmin', 'areamanager', 'owner'), async 
  * GET /api/employees/generate-staff-id/:ownerLoginId
  * Generate next sequential STAFF ID for this owner
  */
+const buildUniqueStaffLoginId = async (ownerLoginId, preferredLoginId = null) => {
+    const preferred = String(preferredLoginId || '').trim();
+    if (preferred) {
+        const existing = await Employee.findOne({ loginId: preferred }).lean();
+        if (!existing) return preferred;
+    }
+
+    const allStaff = await Employee.find({ parentLoginId: ownerLoginId, loginId: /^STAFF/i }).select('loginId').lean();
+    const usedNumbers = allStaff
+        .map(s => parseInt(String(s.loginId || '').replace(/^STAFF/i, ''), 10))
+        .filter(n => Number.isInteger(n) && n >= 1);
+
+    let nextNum = 1;
+    while (usedNumbers.includes(nextNum)) {
+        nextNum += 1;
+    }
+
+    return `STAFF${String(nextNum).padStart(4, '0')}`;
+};
+
 router.get('/generate-staff-id/:ownerLoginId', protect, authorize('superadmin', 'areamanager', 'owner'), async (req, res) => {
     try {
         const { ownerLoginId } = req.params;
@@ -145,22 +165,8 @@ router.get('/generate-staff-id/:ownerLoginId', protect, authorize('superadmin', 
                 return res.status(403).json({ error: 'Forbidden: You can only generate staff IDs for your own employees' });
             }
         }
-        // Count all staff (including inactive/deleted) for this owner to get next number
-        const count = await Employee.countDocuments({ parentLoginId: ownerLoginId });
-        const nextNum = String(count + 1).padStart(4, '0');
-        const staffId = `STAFF${nextNum}`;
-        // Double-check it doesn't already exist
-        const exists = await Employee.findOne({ loginId: staffId });
-        if (exists) {
-            // Find the highest STAFF number and increment
-            const allStaff = await Employee.find({ parentLoginId: ownerLoginId, loginId: /^STAFF/ }).select('loginId');
-            const nums = allStaff
-                .map(s => parseInt((s.loginId || '').replace('STAFF', ''), 10))
-                .filter(n => !isNaN(n));
-            const maxNum = nums.length > 0 ? Math.max(...nums) : 0;
-            const safeId = `STAFF${String(maxNum + 1).padStart(4, '0')}`;
-            return res.status(200).json({ success: true, staffId: safeId });
-        }
+
+        const staffId = await buildUniqueStaffLoginId(ownerLoginId);
         return res.status(200).json({ success: true, staffId });
     } catch (err) {
         return res.status(500).json({ error: 'Failed to generate staff ID', details: err.message });
@@ -279,6 +285,7 @@ router.post('/', protect, authorize('superadmin', 'areamanager', 'owner'), async
         console.log('Creating employee:', { name, loginId, email, role });
 
         const normalizedEmail = email ? String(email).toLowerCase() : '';
+        let finalLoginId = String(loginId || '').trim().toUpperCase();
 
         // ── Helper: send credentials email ──
         const sendStaffEmail = async (empEmail, empLoginId, empPassword, empRole) => {
@@ -300,15 +307,15 @@ router.post('/', protect, authorize('superadmin', 'areamanager', 'owner'), async
         };
 
         // Check loginId exists
-        const exists = await Employee.findOne({ loginId });
+        const exists = await Employee.findOne({ loginId: finalLoginId });
         if (exists) {
             if (exists.isActive === false) {
-                exists.set({ name, loginId, email: normalizedEmail || undefined, phone, password, role, area, areaCode, city, locationCode, permissions, parentLoginId: effectiveParentLoginId, photoDataUrl, isActive: true, updatedAt: new Date() });
+                exists.set({ name, loginId: finalLoginId, email: normalizedEmail || undefined, phone, password, role, area, areaCode, city, locationCode, permissions, parentLoginId: effectiveParentLoginId, photoDataUrl, isActive: true, updatedAt: new Date() });
                 const updated = await exists.save();
-                const emailResult = await sendStaffEmail(email, loginId, password, role);
+                const emailResult = await sendStaffEmail(email, finalLoginId, password, role);
                 return res.status(201).json({ success: true, data: updated, reused: true, email: emailResult });
             }
-            return res.status(409).json({ error: 'Employee with this loginId already exists' });
+            finalLoginId = await buildUniqueStaffLoginId(effectiveParentLoginId, finalLoginId);
         }
 
         // Check email/phone duplicates
@@ -328,20 +335,20 @@ router.post('/', protect, authorize('superadmin', 'areamanager', 'owner'), async
         // Reuse inactive by email/phone
         const reuseTarget = inactiveByEmail || inactiveByPhone;
         if (reuseTarget) {
-            const loginConflict = await Employee.findOne({ loginId });
+            const loginConflict = await Employee.findOne({ loginId: finalLoginId });
             if (loginConflict && String(loginConflict._id) !== String(reuseTarget._id)) {
-                return res.status(409).json({ error: 'Employee with this loginId already exists' });
+                finalLoginId = await buildUniqueStaffLoginId(effectiveParentLoginId, finalLoginId);
             }
-            reuseTarget.set({ name, loginId, email: normalizedEmail || undefined, phone, password, role, area, areaCode, city, locationCode, permissions, parentLoginId: effectiveParentLoginId, photoDataUrl, isActive: true, updatedAt: new Date() });
+            reuseTarget.set({ name, loginId: finalLoginId, email: normalizedEmail || undefined, phone, password, role, area, areaCode, city, locationCode, permissions, parentLoginId: effectiveParentLoginId, photoDataUrl, isActive: true, updatedAt: new Date() });
             const updated = await reuseTarget.save();
-            const emailResult = await sendStaffEmail(email, loginId, password, role);
+            const emailResult = await sendStaffEmail(email, finalLoginId, password, role);
             return res.status(201).json({ success: true, data: updated, reused: true, email: emailResult });
         }
 
         // Create fresh employee
         let employee;
         try {
-            employee = await Employee.create({ name, loginId, email: normalizedEmail || undefined, phone, password, role, area, areaCode, city, locationCode, permissions, parentLoginId: effectiveParentLoginId, photoDataUrl, requirePasswordReset: true });
+            employee = await Employee.create({ name, loginId: finalLoginId, email: normalizedEmail || undefined, phone, password, role, area, areaCode, city, locationCode, permissions, parentLoginId: effectiveParentLoginId, photoDataUrl, requirePasswordReset: true });
         } catch (dbErr) {
             if (dbErr && dbErr.code === 11000) {
                 const dupField = dbErr.keyPattern ? Object.keys(dbErr.keyPattern)[0] : 'field';
