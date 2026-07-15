@@ -534,7 +534,7 @@ exports.adminActionOnViolation = async (req, res) => {
         sender_login_id: 'system',
         sender_name: 'System',
         sender_role: 'superadmin',
-        message: `⚠️ System Warning: Sharing contact details, external links, or external payments is strictly against platform policies. Please keep your communication on Roomhy.`,
+        message: `⚠️ System Warning: Sharing phone numbers, emails, links, or negotiating/paying offline is not allowed. Please keep all chat and payments on Roomhy.`,
         message_type: 'text',
         created_at: new Date(),
         updated_at: new Date()

@@ -321,10 +321,17 @@ exports.deleteMessage = async (req, res) => {
 // Send a message via REST API (useful for automated messages)
 exports.sendMessage = async (req, res) => {
   try {
-    const { to_login_id, from_login_id, message } = req.body;
+    const { to_login_id, from_login_id, message_type, file_url } = req.body;
+    let message = req.body.message;
 
-    if (!to_login_id || !from_login_id || !message) {
-      return res.status(400).json({ error: 'to_login_id, from_login_id, and message are required' });
+    if (!to_login_id || !from_login_id) {
+      return res.status(400).json({ error: 'to_login_id and from_login_id are required' });
+    }
+    if (!message && !file_url) {
+      return res.status(400).json({ error: 'message or file_url is required' });
+    }
+    if (!message) {
+      message = message_type === 'image' ? 'Sent an image' : 'Shared a file';
     }
 
     const { checkUserBlockStatus, isOwnerTenantChat, detectViolation, logViolation } = require('../utils/moderationHelper');
@@ -361,7 +368,8 @@ exports.sendMessage = async (req, res) => {
       sender_name: senderName,
       sender_role: senderRole,
       message: originalText,
-      message_type: 'text',
+      message_type: message_type || 'text',
+      file_url: file_url || undefined,
       is_blocked: false,
       created_at: new Date(),
       updated_at: new Date()
@@ -397,9 +405,12 @@ exports.sendMessage = async (req, res) => {
     if (global.io) {
       global.io.to(to_login_id).emit('receive_message', {
         _id: msg._id,
+        room_id: to_login_id,
         sender_login_id: from_login_id,
         sender_name: senderName,
         message: msg.message,
+        message_type: msg.message_type,
+        file_url: msg.file_url,
         created_at: msg.created_at
       });
       global.io.to(to_login_id).emit('new_message', msg);

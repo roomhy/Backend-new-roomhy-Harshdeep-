@@ -1,5 +1,27 @@
 const TenantAttendance = require('../models/TenantAttendance');
 const Tenant = require('../models/Tenant');
+const mongoose = require('mongoose');
+
+// Helper to resolve tenant document by ID, Login ID, Email, or Phone
+async function resolveTenant(identifier) {
+    if (!identifier) return null;
+    
+    // Check if it is a valid ObjectId
+    if (mongoose.Types.ObjectId.isValid(identifier)) {
+        const tenant = await Tenant.findById(identifier);
+        if (tenant) return tenant;
+    }
+    
+    // Otherwise look up by loginId, email, or phone
+    const tenant = await Tenant.findOne({
+        $or: [
+            { loginId: String(identifier).toUpperCase() },
+            { email: identifier },
+            { phone: identifier }
+        ]
+    });
+    return tenant;
+}
 
 // Get current attendance status for all tenants of an owner
 exports.getOwnerTenantAttendance = async (req, res) => {
@@ -30,38 +52,24 @@ exports.updateTenantStatus = async (req, res) => {
     try {
         const { ownerLoginId, tenantLoginId, tenantId, tenantName, roomNo, status, date } = req.body;
         
-        let finalTenantId = tenantId;
-        let finalTenantName = tenantName;
-        let finalRoomNo = roomNo;
-        
-        // Find tenant document if missing info
-        let tenantDoc = null;
-        if (finalTenantId) {
-            tenantDoc = await Tenant.findById(finalTenantId);
-        } else if (tenantLoginId) {
-            tenantDoc = await Tenant.findOne({ loginId: tenantLoginId });
-        }
-        
-        if (tenantDoc) {
-            finalTenantId = tenantDoc._id;
-            finalTenantName = tenantDoc.name;
-            finalRoomNo = tenantDoc.roomNo || 'N/A';
-        }
-        
-        if (!finalTenantId) {
+        const tenantDoc = await resolveTenant(tenantId || tenantLoginId);
+        if (!tenantDoc) {
             return res.status(400).json({ success: false, message: 'Tenant identity not found' });
         }
-
+        
+        const finalTenantId = tenantDoc._id;
+        const finalTenantName = tenantDoc.name;
+        const finalRoomNo = tenantDoc.roomNo || roomNo || 'N/A';
         const finalDate = date || new Date().toISOString().split('T')[0];
 
         // Upsert the attendance record for the tenant on this specific date
         const attendance = await TenantAttendance.findOneAndUpdate(
             { tenantId: finalTenantId, date: finalDate },
             {
-                ownerLoginId: String(ownerLoginId || tenantDoc?.ownerLoginId || '').toUpperCase(),
+                ownerLoginId: String(ownerLoginId || tenantDoc.ownerLoginId || '').toUpperCase(),
                 tenantId: finalTenantId,
                 tenantName: finalTenantName,
-                roomNo: finalRoomNo || 'N/A',
+                roomNo: finalRoomNo,
                 status,
                 date: finalDate,
                 lastScanTime: new Date()
@@ -86,13 +94,16 @@ exports.syncTenantAttendance = async (req, res) => {
         const todayStr = new Date().toISOString().split('T')[0];
         
         for (const t of tenants) {
-            const exists = await TenantAttendance.findOne({ tenantId: t.id, date: todayStr });
+            const tenantDoc = await resolveTenant(t.id || t.tenantId);
+            if (!tenantDoc) continue;
+
+            const exists = await TenantAttendance.findOne({ tenantId: tenantDoc._id, date: todayStr });
             if (!exists) {
                 await TenantAttendance.create({
                     ownerLoginId: String(ownerLoginId).toUpperCase(),
-                    tenantId: t.id,
-                    tenantName: t.name,
-                    roomNo: t.room || 'N/A',
+                    tenantId: tenantDoc._id,
+                    tenantName: tenantDoc.name,
+                    roomNo: tenantDoc.roomNo || t.room || 'N/A',
                     date: todayStr,
                     status: 'Inside' // Default state
                 });
@@ -105,13 +116,13 @@ exports.syncTenantAttendance = async (req, res) => {
         console.error("Sync Tenant Attendance Error:", err);
         res.status(500).json({ success: false, message: 'Server error' });
     }
-}
+};
 
 // Bulk update tenant attendance
 exports.bulkUpdateTenantStatus = async (req, res) => {
     try {
         const { ownerLoginId, date, status, tenantIds, tenantDataList } = req.body;
-        if (!ownerLoginId || !date || !status || (!tenantIds && !tenantDataList)) {
+        if (!ownerLoginId || !status || (!tenantIds && !tenantDataList)) {
             return res.status(400).json({ success: false, message: 'Missing required fields' });
         }
 
@@ -122,11 +133,13 @@ exports.bulkUpdateTenantStatus = async (req, res) => {
         const tenants = tenantDataList || (tenantIds ? tenantIds.map(id => ({ id })) : []);
 
         for (const t of tenants) {
-            let finalTenantId = t.id || t.tenantId || t._id;
-            let finalTenantName = t.name || t.tenantName || 'Unknown';
-            let finalRoomNo = t.roomNo || 'N/A';
+            const tenantDoc = await resolveTenant(t.id || t.tenantId || t._id);
+            if (!tenantDoc) continue;
 
-            // We use upsert for each tenant
+            const finalTenantId = tenantDoc._id;
+            const finalTenantName = tenantDoc.name;
+            const finalRoomNo = tenantDoc.roomNo || t.roomNo || 'N/A';
+
             bulkOps.push({
                 updateOne: {
                     filter: { tenantId: finalTenantId, date: finalDate },

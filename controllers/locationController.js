@@ -11,7 +11,7 @@ const { uploadImage, deleteImage, getCloudinaryConfig } = require('../utils/clou
  */
 exports.getCities = async (req, res) => {
     try {
-        const cities = await City.find({ status: 'Active' }).select('_id name state colleges population imageUrl propertyCount status').sort({ createdAt: -1 });
+        const cities = await City.find({ status: 'Active' }).select('_id name slug state colleges population imageUrl propertyCount status').sort({ createdAt: -1 });
         
         // Fetch dynamic property counts for each city from ApprovedProperty
         const cityDataWithCounts = await Promise.all(cities.map(async (cityDoc) => {

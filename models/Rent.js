@@ -38,6 +38,7 @@ const rentSchema = new mongoose.Schema({
     razorpayOrderId: String,
     razorpayPaymentId: String,
     razorpaySignature: String,
+    invoiceNumber: { type: String, default: null }, // Sequential GST Invoice Number e.g. RHY-2025-001234
     // Owner payout tracking (platform -> owner transfer)
     ownerPayoutStatus: {
         type: String,

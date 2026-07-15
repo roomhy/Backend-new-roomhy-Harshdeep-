@@ -4,6 +4,7 @@ const AmenitySchema = new mongoose.Schema(
   {
     name: { type: String, required: true, unique: true, trim: true },
     icon: { type: String, default: 'check' },
+    iconSvg: { type: String, default: '' },
     category: { 
       type: String, 
       enum: ['basic', 'comfort', 'luxury', 'safety', 'other'], 

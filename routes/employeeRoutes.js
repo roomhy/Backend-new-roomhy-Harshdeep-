@@ -3,12 +3,13 @@ const router = express.Router();
 const Employee = require('../models/Employee');
 const jwt = require('jsonwebtoken');
 const { protect, authorize, protectPasswordReset } = require('../middleware/authMiddleware');
+const { authLimiter, authIpLimiter } = require('../middleware/security');
 
 /**
  * POST /api/employees/login
  * Staff login — checks loginId + password
  */
-router.post('/login', async (req, res) => {
+router.post('/login', authIpLimiter, authLimiter, async (req, res) => {
     try {
         const { loginId, password } = req.body;
         if (!loginId || !password) return res.status(400).json({ success: false, error: 'loginId and password required' });
@@ -74,7 +75,7 @@ router.post('/login', async (req, res) => {
  * POST /api/employees/:loginId/reset-password
  * Staff one-time password reset
  */
-router.post('/:loginId/reset-password', protectPasswordReset, async (req, res) => {
+router.post('/:loginId/reset-password', authIpLimiter, authLimiter, protectPasswordReset, async (req, res) => {
     try {
         const { loginId } = req.params;
         const { newPassword } = req.body;
@@ -87,6 +88,9 @@ router.post('/:loginId/reset-password', protectPasswordReset, async (req, res) =
 
         const emp = await Employee.findOne({ loginId });
         if (!emp) return res.status(404).json({ success: false, error: 'Employee not found' });
+        if (emp.requirePasswordReset === false) {
+            return res.status(400).json({ success: false, error: 'Password has already been reset' });
+        }
 
         emp.password = newPassword; // Model may hash on save
         emp.requirePasswordReset = false;

@@ -146,7 +146,7 @@ router.put('/settings', protect, async (req, res) => {
 });
 
 // Change password
-router.put('/change-password', authLimiter, protect, async (req, res) => {
+router.put('/change-password', protect, authLimiter, async (req, res) => {
     try {
         const { currentPassword, newPassword } = req.body;
 

@@ -68,7 +68,8 @@ module.exports = (io) => {
      */
     socket.on('send_message', async (data) => {
       try {
-        const { to_login_id, message } = data;
+        const { to_login_id, message_type, file_url } = data;
+        let message = data.message;
         const from_login_id = socket.userLogin;
 
         if (!from_login_id) {
@@ -76,9 +77,13 @@ module.exports = (io) => {
           return;
         }
 
-        if (!to_login_id || !message || message.trim().length === 0) {
+        if (!to_login_id || (!message && !file_url)) {
           socket.emit('error', { message: 'Invalid message data' });
           return;
+        }
+
+        if (!message) {
+          message = message_type === 'image' ? 'Sent an image' : 'Shared a file';
         }
 
         const { checkUserBlockStatus, isOwnerTenantChat, detectViolation, logViolation } = require('../utils/moderationHelper');
@@ -100,7 +105,8 @@ module.exports = (io) => {
           sender_name: socket.userName,
           sender_role: socket.userRole,
           message: originalText,
-          message_type: 'text',
+          message_type: message_type || 'text',
+          file_url: file_url || undefined,
           is_blocked: false,
           created_at: new Date(),
           updated_at: new Date()
@@ -113,9 +119,24 @@ module.exports = (io) => {
         // Emit to receiver's room
         io.to(to_login_id).emit('receive_message', {
           _id: msg._id,
+          room_id: to_login_id,
           sender_login_id: from_login_id,
           sender_name: socket.userName,
           message: msg.message,
+          message_type: msg.message_type,
+          file_url: msg.file_url,
+          created_at: msg.created_at
+        });
+
+        // Emit to sender's own room so the sender's UI updates in real-time
+        io.to(from_login_id).emit('receive_message', {
+          _id: msg._id,
+          room_id: from_login_id,
+          sender_login_id: from_login_id,
+          sender_name: socket.userName,
+          message: msg.message,
+          message_type: msg.message_type,
+          file_url: msg.file_url,
           created_at: msg.created_at
         });
 

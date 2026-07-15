@@ -1,8 +1,10 @@
 const mongoose = require('mongoose');
+const slugify = require('../utils/slugify');
 
 const AreaSchema = new mongoose.Schema(
     {
         name: { type: String, required: true, trim: true },
+        slug: { type: String, trim: true, index: true },
         cityId: { type: mongoose.Schema.Types.ObjectId, ref: 'City' },
         city: { type: mongoose.Schema.Types.ObjectId, ref: 'City' }, // Backward compatibility
         cityName: { type: String, required: true }, // Denormalized for easier querying
@@ -19,9 +21,18 @@ const AreaSchema = new mongoose.Schema(
     { timestamps: true }
 );
 
+AreaSchema.pre('save', function(next) {
+    if (this.isModified('name')) {
+        this.slug = slugify(this.name);
+    }
+    next();
+});
+
 // Compound index for unique area per city
 AreaSchema.index({ name: 1, city: 1 }, { unique: true });
 AreaSchema.index({ name: 1, cityId: 1 }, { unique: true });
+AreaSchema.index({ slug: 1, city: 1 }, { unique: true });
+AreaSchema.index({ slug: 1, cityId: 1 }, { unique: true });
 
 // Static methods
 AreaSchema.statics.getAreasByCity = function(cityId) {

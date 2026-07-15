@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const propertyManagerController = require('../controllers/propertyManagerController');
+const { authLimiter, authIpLimiter } = require('../middleware/security');
 
 // Login
-router.post('/login', propertyManagerController.loginPropertyManager);
+router.post('/login', authIpLimiter, authLimiter, propertyManagerController.loginPropertyManager);
 
 // Create property manager
 router.post('/', propertyManagerController.createPropertyManager);
@@ -30,7 +31,7 @@ router.post('/:managerId/reactivate', propertyManagerController.reactivateProper
 router.post('/:managerId/reset-password', propertyManagerController.resetManagerPassword);
 
 // Reset initial password from frontend
-router.post('/reset-initial-password', propertyManagerController.resetInitialPassword);
+router.post('/reset-initial-password', authIpLimiter, authLimiter, propertyManagerController.resetInitialPassword);
 
 // Add tenant to property manager's assigned property
 router.post('/:managerId/tenants', propertyManagerController.addTenantToProperty);

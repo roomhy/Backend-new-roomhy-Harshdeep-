@@ -3,7 +3,9 @@ const mongoose = require('mongoose');
 const NotificationSchema = new mongoose.Schema({
   toRole: { type: String, default: '' }, // e.g., 'superadmin' or specific loginId
   toLoginId: { type: String, default: '' },
-  from: { type: String, required: true },
+  from: { type: String, default: 'system' },
+  title: { type: String, default: '' },
+  message: { type: String, default: '' },
   type: { type: String, default: 'info' },
   meta: { type: mongoose.Schema.Types.Mixed, default: {} },
   read: { type: Boolean, default: false },

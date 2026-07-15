@@ -1,8 +1,10 @@
 const mongoose = require('mongoose');
+const slugify = require('../utils/slugify');
 
 const CitySchema = new mongoose.Schema(
     {
         name: { type: String, required: true, unique: true, trim: true, index: true },
+        slug: { type: String, unique: true, sparse: true, trim: true, index: true },
         state: { type: String, required: true, trim: true },
         country: { type: String, default: 'India' },
         colleges: [{ type: String }], // List of colleges/institutions
@@ -21,6 +23,13 @@ const CitySchema = new mongoose.Schema(
     },
     { timestamps: true }
 );
+
+CitySchema.pre('save', function(next) {
+    if (this.isModified('name')) {
+        this.slug = slugify(this.name);
+    }
+    next();
+});
 
 // Static methods
 CitySchema.statics.getPopularCities = function(limit = 10) {

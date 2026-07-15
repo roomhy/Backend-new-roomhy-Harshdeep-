@@ -1,4 +1,5 @@
 const rateLimit = require('express-rate-limit');
+const jwt = require('jsonwebtoken');
 
 function boolFromEnv(value, fallback = false) {
     if (value === undefined || value === null || value === '') return fallback;
@@ -10,6 +11,41 @@ function getClientIp(req) {
     if (Array.isArray(xff) && xff.length) return xff[0];
     if (typeof xff === 'string' && xff.length) return xff.split(',')[0].trim();
     return req.socket.remoteAddress || '';
+}
+
+function getRateLimitKey(req) {
+    // 1. If req.user is already populated by auth middleware
+    if (req.user && (req.user.id || req.user._id)) {
+        return `user:${req.user.id || req.user._id}`;
+    }
+
+    // 2. If authentication has not occurred yet, check for bearer token and verify it
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+        try {
+            const token = req.headers.authorization.split(' ')[1];
+            if (token) {
+                // Verify the JWT token securely (complying with Rule 3: Do Not Use jwt.decode)
+                const decoded = jwt.verify(token, process.env.JWT_SECRET);
+                if (decoded && decoded.id) {
+                    return `user:${decoded.id}`;
+                }
+            }
+        } catch (e) {
+            // Ignore token verification errors and proceed to other identifiers or IP fallback
+        }
+    }
+
+    // 3. Check for identifier-based body fields (for login/OTP/forgot-password/reset)
+    const bodyIdentifier = req.body && (req.body.identifier || req.body.loginId || req.body.email || req.body.phone || req.body.username);
+    if (bodyIdentifier) {
+        const normalized = String(bodyIdentifier).trim().toLowerCase();
+        if (normalized) {
+            return `ident:${normalized}`;
+        }
+    }
+
+    // 4. Fallback to client IP for public/unauthenticated requests
+    return getClientIp(req);
 }
 
 // Read all limits from environment — never hardcode production values.
@@ -27,7 +63,7 @@ const globalApiLimiter = rateLimit({
     max: GLOBAL_MAX,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => getClientIp(req),
+    keyGenerator: (req) => getRateLimitKey(req),
     message: {
         success: false,
         message: 'Too many requests. Please try again later.'
@@ -40,7 +76,7 @@ const authLimiter = rateLimit({
     max: AUTH_MAX,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => getClientIp(req),
+    keyGenerator: (req) => getRateLimitKey(req),
     message: {
         success: false,
         message: 'Too many authentication attempts. Please try again later.'
@@ -53,7 +89,7 @@ const otpLimiter = rateLimit({
     max: OTP_MAX,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => getClientIp(req),
+    keyGenerator: (req) => getRateLimitKey(req),
     message: {
         success: false,
         message: 'Too many OTP requests. Please wait before trying again.'
@@ -66,7 +102,7 @@ const formLimiter = rateLimit({
     max: FORM_MAX,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => getClientIp(req),
+    keyGenerator: (req) => getRateLimitKey(req),
     message: {
         success: false,
         message: 'Too many submissions. Please try again later.'
@@ -79,7 +115,7 @@ const contactLimiter = rateLimit({
     max: CONTACT_MAX,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => getClientIp(req),
+    keyGenerator: (req) => getRateLimitKey(req),
     message: {
         success: false,
         message: 'Too many contact requests. Please try again later.'
@@ -92,7 +128,7 @@ const refundLimiter = rateLimit({
     max: REFUND_MAX,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => getClientIp(req),
+    keyGenerator: (req) => getRateLimitKey(req),
     message: {
         success: false,
         message: 'Too many refund requests. Please try again later.'
@@ -105,10 +141,36 @@ const chatLimiter = rateLimit({
     max: CHAT_MAX,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => getClientIp(req),
+    keyGenerator: (req) => getRateLimitKey(req),
     message: {
         success: false,
         message: 'Too many messages. Please slow down.'
+    }
+});
+
+// Short IP-based limiter to protect login/auth endpoints from massive brute force attempts (infrastructure protection)
+const authIpLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute window
+    max: 30, // max 30 attempts per minute per IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => getClientIp(req),
+    message: {
+        success: false,
+        message: 'Too many login attempts from this IP. Please try again later.'
+    }
+});
+
+// Short IP-based limiter to protect OTP endpoints from massive brute force attempts (infrastructure protection)
+const otpIpLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute window
+    max: 10, // max 10 OTP requests/verifications per minute per IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => getClientIp(req),
+    message: {
+        success: false,
+        message: 'Too many OTP requests from this IP. Please wait before trying again.'
     }
 });
 
@@ -202,5 +264,7 @@ module.exports = {
     contactLimiter,
     refundLimiter,
     chatLimiter,
+    authIpLimiter,
+    otpIpLimiter,
     captchaProtection
 };

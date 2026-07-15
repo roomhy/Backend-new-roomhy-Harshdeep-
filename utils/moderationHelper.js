@@ -31,6 +31,13 @@ async function getParticipantRoleAndName(loginId) {
     return { role: 'website_user', name: `Tenant (${cleanId})` };
   }
 
+  // Fallback pattern matching for IDs not present in DB (e.g. mock test data/new users)
+  if (/^ROOMHYTNT/i.test(upperId)) {
+    return { role: 'tenant', name: `Tenant (${cleanId})` };
+  } else if (/^ROOMHY/i.test(upperId)) {
+    return { role: 'property_owner', name: `Owner (${cleanId})` };
+  }
+
   return { role: null, name: cleanId };
 }
 
@@ -61,7 +68,7 @@ async function checkUserBlockStatus(loginId) {
   if (user && user.chatRestrictedUntil && new Date(user.chatRestrictedUntil) > new Date()) {
     return { 
       blocked: true, 
-      reason: `Your chat access has been temporarily restricted until ${new Date(user.chatRestrictedUntil).toLocaleString()}` 
+      reason: `Your chat is blocked until ${new Date(user.chatRestrictedUntil).toLocaleString()}` 
     };
   }
 
@@ -74,7 +81,7 @@ async function checkUserBlockStatus(loginId) {
   if (owner && owner.chatRestrictedUntil && new Date(owner.chatRestrictedUntil) > new Date()) {
     return { 
       blocked: true, 
-      reason: `Your chat access has been temporarily restricted until ${new Date(owner.chatRestrictedUntil).toLocaleString()}` 
+      reason: `Your chat is blocked until ${new Date(owner.chatRestrictedUntil).toLocaleString()}` 
     };
   }
 
@@ -105,7 +112,7 @@ async function checkUserBlockStatus(loginId) {
 
       return {
         blocked: true,
-        reason: `Your chat access has been temporarily restricted for ${durationHours} hours due to repeated policy violations.`
+        reason: `Your chat is blocked for ${durationHours} hours due to warnings.`
       };
     }
   }
@@ -593,7 +600,7 @@ async function moderateChatMessageAsync(messageDoc, receiverLoginId) {
       }
 
       // Insert system warning message in the conversation room
-      const warningText = `⚠️ System Warning: Attempting to share contact details, bypass commission, or negotiate/pay offline violates platform policies. Please keep all communication and transactions inside Roomhy.`;
+      const warningText = `⚠️ System Warning: Sharing phone numbers, emails, links, or negotiating/paying offline is not allowed. Please keep all chat and payments on Roomhy.`;
       
       const systemMessage = new ChatMessage({
         room_id: messageDoc.room_id,
@@ -611,7 +618,7 @@ async function moderateChatMessageAsync(messageDoc, receiverLoginId) {
       if (global.io) {
         const payload = {
           _id: systemMessage._id,
-          room_id: systemMessage.room_id,
+          room_id: messageDoc.room_id,
           conversation_id: systemMessage.conversation_id,
           sender_login_id: 'system',
           sender_name: 'Roomhy System',
@@ -620,9 +627,12 @@ async function moderateChatMessageAsync(messageDoc, receiverLoginId) {
           message_type: 'system',
           created_at: systemMessage.created_at
         };
-        // Emit to both room_id and V2 broad list if needed
-        global.io.to(messageDoc.room_id).emit('receive_message', payload);
+        // Emit to both receiver and sender rooms so both screens update in real-time
+        global.io.to(messageDoc.room_id).emit('receive_message', { ...payload, room_id: messageDoc.room_id });
         global.io.to(messageDoc.room_id).emit('new_message', systemMessage);
+        
+        global.io.to(messageDoc.sender_login_id).emit('receive_message', { ...payload, room_id: messageDoc.sender_login_id });
+        global.io.to(messageDoc.sender_login_id).emit('new_message', systemMessage);
       }
 
       // Emit new_violation_alert to Super Admin

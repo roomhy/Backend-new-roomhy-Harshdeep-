@@ -5,7 +5,7 @@ const Owner = require('../models/Owner');
 const Tenant = require('../models/Tenant');
 const { sendMail } = require('../utils/mailer');
 const { sendDocumentToResolvedUser, sendTemplateToResolvedUser } = require('../utils/whatsappBot');
-const { otpLimiter } = require('../middleware/security');
+const { otpLimiter, otpIpLimiter } = require('../middleware/security');
 const { requestAadhaarOtp, verifyAadhaarOtp, aadhaarOcr } = require('../services/cashfreeKycService');
 const { generateAgreementPdfBuffer } = require('../utils/generateAgreementPdf');
 const cloudinary = require('../utils/cloudinary');
@@ -690,7 +690,7 @@ router.post('/owner/profile', async (req, res) => {
     }
 });
 
-router.post('/owner/kyc/send-otp', otpLimiter, async (req, res) => {
+router.post('/owner/kyc/send-otp', otpIpLimiter, otpLimiter, async (req, res) => {
     try {
         const { loginId, aadhaarLinkedPhone, aadhaarNumber, email } = req.body || {};
         console.log('[CHECKIN KYC] Received send-otp request:', { loginId, aadhaarLinkedPhone, aadhaarNumber, email });
@@ -789,7 +789,7 @@ router.post('/owner/kyc/send-otp', otpLimiter, async (req, res) => {
     }
 });
 
-router.post('/owner/kyc/verify-otp', otpLimiter, async (req, res) => {
+router.post('/owner/kyc/verify-otp', otpIpLimiter, otpLimiter, async (req, res) => {
     try {
         const { loginId, aadhaarNumber, otp } = req.body || {};
         const k = keyFor('owner', loginId, aadhaarNumber);
@@ -915,7 +915,7 @@ router.post('/owner/kyc/verify-otp', otpLimiter, async (req, res) => {
     }
 });
 
-router.post('/owner/kyc/digilocker/start', otpLimiter, async (req, res) => {
+router.post('/owner/kyc/digilocker/start', otpIpLimiter, otpLimiter, async (req, res) => {
     try {
         const { loginId, aadhaarLinkedPhone, aadhaarNumber, email, redirectUrl: clientRedirectUrl } = req.body || {};
         if (!loginId || !aadhaarNumber) {
@@ -990,7 +990,7 @@ router.post('/owner/kyc/digilocker/start', otpLimiter, async (req, res) => {
     }
 });
 
-router.post('/owner/kyc/digilocker/complete', otpLimiter, async (req, res) => {
+router.post('/owner/kyc/digilocker/complete', otpIpLimiter, otpLimiter, async (req, res) => {
     try {
         const { loginId, aadhaarNumber, referenceId, verificationId } = req.body || {};
         if (!loginId || !aadhaarNumber || (!referenceId && !verificationId)) {
@@ -1283,7 +1283,7 @@ router.post('/tenant/profile', async (req, res) => {
     }
 });
 
-router.post('/tenant/kyc/send-otp', otpLimiter, async (req, res) => {
+router.post('/tenant/kyc/send-otp', otpIpLimiter, otpLimiter, async (req, res) => {
     try {
         const { loginId, aadhaarLinkedPhone, aadhaarNumber, aadhaarFront, aadhaarBack } = req.body || {};
         if (!loginId || !aadhaarLinkedPhone || !aadhaarNumber) {
@@ -1386,7 +1386,7 @@ router.post('/tenant/kyc/send-otp', otpLimiter, async (req, res) => {
     }
 });
 
-router.post('/tenant/kyc/verify-otp', otpLimiter, async (req, res) => {
+router.post('/tenant/kyc/verify-otp', otpIpLimiter, otpLimiter, async (req, res) => {
     try {
         const { loginId, aadhaarNumber, otp, aadhaarFront, aadhaarBack, tenantPhoto } = req.body || {};
         const normalizedLoginId = String(loginId || '').toUpperCase();
@@ -1447,7 +1447,7 @@ router.post('/tenant/kyc/verify-otp', otpLimiter, async (req, res) => {
     }
 });
 
-router.post('/tenant/kyc/digilocker/start', otpLimiter, async (req, res) => {
+router.post('/tenant/kyc/digilocker/start', otpIpLimiter, otpLimiter, async (req, res) => {
     try {
         const { loginId, aadhaarLinkedPhone, aadhaarNumber, aadhaarFront, aadhaarBack, redirectUrl: clientRedirectUrl } = req.body || {};
         if (!loginId || !aadhaarNumber) {
@@ -1539,7 +1539,7 @@ router.post('/tenant/kyc/digilocker/start', otpLimiter, async (req, res) => {
     }
 });
 
-router.post('/tenant/kyc/digilocker/complete', otpLimiter, async (req, res) => {
+router.post('/tenant/kyc/digilocker/complete', otpIpLimiter, otpLimiter, async (req, res) => {
     try {
         const { loginId, aadhaarNumber, referenceId, verificationId } = req.body || {};
         if (!loginId || !aadhaarNumber || (!referenceId && !verificationId)) {

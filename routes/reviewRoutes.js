@@ -260,33 +260,51 @@ router.post('/', protect, async (req, res) => {
       });
     }
 
-    // ✅ NEW: Verify if the user has actually bought (booked) the property
-    const BookingRequest = require('../models/BookingRequest');
-    const userBooking = await BookingRequest.findOne({
-      $and: [
-        { property_id: propertyId },
-        { 
-          $or: [
-            { user_id: String(userId) },
-            { email: email }
-          ]
-        },
-        { 
-          $or: [
-            { booking_status: 'confirmed' },
-            { status: 'confirmed' },
-            { status: 'booked' },
-            { payment_status: 'completed' }
-          ]
-        }
-      ]
-    });
+    // ✅ GATE: Only active moved-in tenants can submit reviews
+    const Tenant = require('../models/Tenant');
+    const now = new Date();
 
-    if (!userBooking) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access Denied: Reviews are only allowed for guests with a confirmed and paid booking for this property.'
+    // First: Check if they have an active Tenant record for this property
+    const tenantRecord = await Tenant.findOne({
+      property: propertyId,
+      isDeleted: { $ne: true },
+      status: 'active',
+      $or: [
+        { email: email },
+        { user: userId }
+      ],
+      moveInDate: { $lte: now }
+    }).lean();
+
+    if (!tenantRecord) {
+      // Fallback: check BookingRequest for confirmed/completed bookings
+      const BookingRequest = require('../models/BookingRequest');
+      const userBooking = await BookingRequest.findOne({
+        $and: [
+          { property_id: propertyId },
+          { 
+            $or: [
+              { user_id: String(userId) },
+              { email: email }
+            ]
+          },
+          { 
+            $or: [
+              { booking_status: 'confirmed' },
+              { status: 'confirmed' },
+              { status: 'booked' },
+              { payment_status: 'completed' }
+            ]
+          }
+        ]
       });
+
+      if (!userBooking) {
+        return res.status(403).json({
+          success: false,
+          message: 'Reviews can only be submitted by active tenants who have already moved in to this property.'
+        });
+      }
     }
     
     // Create new review

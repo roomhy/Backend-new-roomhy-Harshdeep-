@@ -6,6 +6,7 @@ const Owner = require('../models/Owner');
 const KYCVerification = require('../models/KYCVerification');
 const jwt = require('jsonwebtoken');
 const mailer = require('../utils/mailer');
+const crypto = require('crypto');
 
 if (!process.env.JWT_SECRET) {
     throw new Error('JWT_SECRET environment variable is not configured');
@@ -13,8 +14,18 @@ if (!process.env.JWT_SECRET) {
 const { sendTemplateToResolvedUser } = require('../utils/whatsappBot');
 const OWNER_LOGIN_ID_REGEX = /^ROOMHY\d{4}$/i;
 
-// OTP storage (in production, use Redis or database)
+// OTP storage (in-memory Map)
 const otpStore = new Map();
+
+// Auto-clean expired otpStore entries every 5 minutes to prevent memory leaks
+setInterval(() => {
+    const now = Date.now();
+    for (const [key, value] of otpStore.entries()) {
+        if (value.expiryTime && now > value.expiryTime) {
+            otpStore.delete(key);
+        }
+    }
+}, 5 * 60 * 1000).unref();
 
 function generateToken(user) {
     return jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
@@ -209,8 +220,12 @@ exports.forgotPasswordVerifyOTP = async (req, res) => {
             return res.status(401).json({ message: 'Invalid OTP. Please try again.' });
         }
 
-        // OTP verified - generate reset token (valid for 15 minutes)
-        const resetToken = jwt.sign({ email, type: 'forgot-password' }, process.env.JWT_SECRET, { expiresIn: '15m' });
+        // OTP verified - generate cryptographically secure transaction ID (jti)
+        const jti = crypto.randomBytes(16).toString('hex');
+        const resetToken = jwt.sign({ email, type: 'forgot-password', jti }, process.env.JWT_SECRET, { expiresIn: '15m' });
+
+        // Save reset session state with secure token id and proper expiry
+        otpStore.set(`reset:email:${email}`, { jti, expiryTime: Date.now() + 15 * 60 * 1000 });
 
         // Clear OTP after successful verification
         otpStore.delete(email);
@@ -241,13 +256,24 @@ exports.forgotPasswordReset = async (req, res) => {
         }
 
         // Verify reset token
+        let decoded;
         try {
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            decoded = jwt.verify(token, process.env.JWT_SECRET);
             if (decoded.type !== 'forgot-password' || decoded.email !== email) {
                 return res.status(401).json({ message: 'Invalid reset token' });
             }
         } catch (err) {
-            return res.status(401).json({ message: 'Reset token expired or invalid. Please request a new OTP.' });
+            return res.status(401).json({ message: 'Reset session expired. Please request a new OTP.' });
+        }
+
+        // Verify active reset session exists and matches the token
+        const resetData = otpStore.get(`reset:email:${email}`);
+        if (!resetData || resetData.jti !== decoded.jti) {
+            return res.status(401).json({ message: 'Reset session expired or already consumed. Please request a new OTP.' });
+        }
+        if (Date.now() > resetData.expiryTime) {
+            otpStore.delete(`reset:email:${email}`);
+            return res.status(401).json({ message: 'Reset session expired. Please request a new OTP.' });
         }
 
         // Find user and update password - check User, AreaManager, and Employee collections
@@ -276,7 +302,13 @@ exports.forgotPasswordReset = async (req, res) => {
 
         // Update password (will be hashed by pre-save hook)
         user.password = newPassword;
+        if (userType === 'User' || userType === 'Employee') {
+            user.requirePasswordReset = false;
+        }
         await user.save();
+
+        // Invalidate the password reset session state immediately
+        otpStore.delete(`reset:email:${email}`);
 
         console.log('[ForgotPassword] Password reset for', userType, 'email:', email);
 
@@ -400,11 +432,16 @@ exports.ownerForgotPasswordVerifyOTP = async (req, res) => {
         }
         if (otpData.otp !== otp) return res.status(401).json({ message: 'Invalid OTP' });
 
+        // Generate cryptographically secure transaction ID (jti)
+        const jti = crypto.randomBytes(16).toString('hex');
         const resetToken = jwt.sign(
-            { loginId, type: 'owner-forgot-password' },
+            { loginId, type: 'owner-forgot-password', jti },
             process.env.JWT_SECRET,
             { expiresIn: '15m' }
         );
+
+        // Store secure reset session
+        otpStore.set(`reset:owner:${loginId}`, { jti, expiryTime: Date.now() + 15 * 60 * 1000 });
 
         otpStore.delete(otpKey);
         res.json({ success: true, token: resetToken, message: 'OTP verified' });
@@ -429,13 +466,24 @@ exports.ownerForgotPasswordReset = async (req, res) => {
             return res.status(400).json({ message: 'Password must be at least 6 characters' });
         }
 
+        let decoded;
         try {
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            decoded = jwt.verify(token, process.env.JWT_SECRET);
             if (decoded.type !== 'owner-forgot-password' || decoded.loginId !== loginId) {
                 return res.status(401).json({ message: 'Invalid reset token' });
             }
         } catch (e) {
-            return res.status(401).json({ message: 'Reset token expired or invalid' });
+            return res.status(401).json({ message: 'Reset session expired. Please request a new OTP.' });
+        }
+
+        // Verify active reset session
+        const resetData = otpStore.get(`reset:owner:${loginId}`);
+        if (!resetData || resetData.jti !== decoded.jti) {
+            return res.status(401).json({ message: 'Reset session expired or already consumed. Please request a new OTP.' });
+        }
+        if (Date.now() > resetData.expiryTime) {
+            otpStore.delete(`reset:owner:${loginId}`);
+            return res.status(401).json({ message: 'Reset session expired. Please request a new OTP.' });
         }
 
         const owner = await Owner.findOne({ loginId });
@@ -452,11 +500,15 @@ exports.ownerForgotPasswordReset = async (req, res) => {
             const ownerUser = await User.findOne({ loginId, role: 'owner' });
             if (ownerUser) {
                 ownerUser.password = newPassword; // User model hashes on save
+                ownerUser.requirePasswordReset = false;
                 await ownerUser.save();
             }
         } catch (e) {
             console.warn('ownerForgotPasswordReset sync user warning:', e.message);
         }
+
+        // Invalidate the session
+        otpStore.delete(`reset:owner:${loginId}`);
 
         const email = (owner.profile && owner.profile.email) || owner.email || '';
         if (email) {
@@ -532,7 +584,6 @@ exports.tenantForgotPasswordRequestOTP = async (req, res) => {
         res.status(500).json({ message: 'Server error' });
     }
 };
-
 // Tenant Forgot Password: Verify OTP
 exports.tenantForgotPasswordVerifyOTP = async (req, res) => {
     try {
@@ -549,11 +600,16 @@ exports.tenantForgotPasswordVerifyOTP = async (req, res) => {
         }
         if (otpData.otp !== otp) return res.status(401).json({ message: 'Invalid OTP' });
 
+        // Generate cryptographically secure transaction ID (jti)
+        const jti = crypto.randomBytes(16).toString('hex');
         const resetToken = jwt.sign(
-            { loginId, type: 'tenant-forgot-password' },
+            { loginId, type: 'tenant-forgot-password', jti },
             process.env.JWT_SECRET,
             { expiresIn: '15m' }
         );
+
+        // Store secure reset session
+        otpStore.set(`reset:tenant:${loginId}`, { jti, expiryTime: Date.now() + 15 * 60 * 1000 });
 
         otpStore.delete(otpKey);
         res.json({ success: true, token: resetToken, message: 'OTP verified' });
@@ -577,19 +633,31 @@ exports.tenantForgotPasswordReset = async (req, res) => {
             return res.status(400).json({ message: 'Password must be at least 6 characters' });
         }
 
+        let decoded;
         try {
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            decoded = jwt.verify(token, process.env.JWT_SECRET);
             if (decoded.type !== 'tenant-forgot-password' || decoded.loginId !== loginId) {
                 return res.status(401).json({ message: 'Invalid reset token' });
             }
         } catch (e) {
-            return res.status(401).json({ message: 'Reset token expired or invalid' });
+            return res.status(401).json({ message: 'Reset session expired. Please request a new OTP.' });
+        }
+
+        // Verify active reset session
+        const resetData = otpStore.get(`reset:tenant:${loginId}`);
+        if (!resetData || resetData.jti !== decoded.jti) {
+            return res.status(401).json({ message: 'Reset session expired or already consumed. Please request a new OTP.' });
+        }
+        if (Date.now() > resetData.expiryTime) {
+            otpStore.delete(`reset:tenant:${loginId}`);
+            return res.status(401).json({ message: 'Reset session expired. Please request a new OTP.' });
         }
 
         const user = await User.findOne({ loginId, role: 'tenant' });
         if (!user) return res.status(404).json({ message: 'Tenant not found' });
 
         user.password = newPassword;
+        user.requirePasswordReset = false;
         await user.save();
 
         const tenant = await Tenant.findOne({ loginId });
@@ -597,6 +665,9 @@ exports.tenantForgotPasswordReset = async (req, res) => {
             tenant.tempPassword = null;
             await tenant.save();
         }
+
+        // Invalidate session
+        otpStore.delete(`reset:tenant:${loginId}`);
 
         const email = (tenant && tenant.email) || user.email || '';
         if (email) {
@@ -713,6 +784,16 @@ exports.login = async (req, res) => {
                         }
                     }
                 }
+
+                // Do not force password reset for tenants on login, auto-clear requirePasswordReset
+                if (user.role === 'tenant') {
+                    reqReset = false;
+                    if (user.requirePasswordReset) {
+                        user.requirePasswordReset = false;
+                        await User.updateOne({ _id: user._id }, { $set: { requirePasswordReset: false } });
+                    }
+                }
+
                 if (reqReset) {
                     return res.status(200).json({
                         success: true,

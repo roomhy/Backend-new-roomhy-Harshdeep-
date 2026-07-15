@@ -2179,11 +2179,35 @@ if (ownerId) {
         },
         read: false
     });
+
+    // Notify all superadmins about the payment
+    try {
+        const superAdmins = await User.find({ role: 'superadmin' }).lean();
+        for (const sa of superAdmins) {
+            await Notification.create({
+                toLoginId: String(sa.loginId || 'SUPER_ADMIN').toUpperCase(),
+                toRole: 'superadmin',
+                from: 'system',
+                type: 'payment',
+                meta: {
+                    bookingId: booking._id.toString(),
+                    amount: booking.payment_amount || 0,
+                    tenantName: booking.name || '',
+                    tenantEmail: booking.email || '',
+                    tenantPhone: booking.phone || '',
+                    propertyId: booking.property_id || '',
+                    title: 'New Tenant Payment Received',
+                    message: `Tenant ${booking.name || ''} has paid INR ${booking.payment_amount || 0} for property ${booking.property_name || ''}.`
+                },
+                read: false
+            });
+        }
+    } catch (notifErr) {
+        console.warn('Failed to notify superadmins of payment:', notifErr.message);
+    }
 }
 
-// Create PaymentTransaction in DB using dynamic commission percentage
-
-        // Create PaymentTransaction in DB using dynamic commission percentage
+// Create PaymentTransaction in DB and Trigger Auto-Payout
         try {
             let settings = await SystemSettings.findOne();
             let commPct = 10; // default
@@ -2194,8 +2218,10 @@ if (ownerId) {
             const amt = Number(amount || booking.rent_amount || 0);
             const commAmt = Math.round((amt * commPct / 100) * 100) / 100;
             const ownerAmt = Math.round((amt - commAmt) * 100) / 100;
+            const payoutReference = 'RHY-PAY-' + Math.floor(10000000 + Math.random() * 90000000);
 
-            await PaymentTransaction.create({
+            // Create Transaction as Paid since we are auto-processing payout
+            const tx = await PaymentTransaction.create({
                 razorpay_payment_id: paymentId,
                 razorpay_order_id: orderId || null,
                 razorpay_signature: signature || null,
@@ -2210,18 +2236,64 @@ if (ownerId) {
                 commission_percentage: commPct,
                 commission_amount: commAmt,
                 owner_amount: ownerAmt,
-                payout_status: 'Pending',
+                payout_status: 'Paid',
+                payout_date: new Date(),
+                payout_reference: payoutReference,
+                payout_initiated_by: 'system',
                 payment_method: 'razorpay',
                 payment_date: new Date()
             });
             console.log('✅ Created PaymentTransaction for payment', paymentId);
+
+            // Update Owner's wallet balances automatically
+            const ownerIdUpper = String(booking.owner_id || '').toUpperCase();
+            const owner = await Owner.findOne({ loginId: ownerIdUpper });
+            if (owner) {
+                owner.walletBalance = Math.max(0, (owner.walletBalance || 0) + ownerAmt);
+                owner.withdrawnBalance = (owner.withdrawnBalance || 0) + ownerAmt;
+                await owner.save();
+                console.log(`✅ Updated Owner ${ownerIdUpper} wallet balance with payout of INR ${ownerAmt}`);
+            }
+
+            // Create PayoutLog audit trail automatically
+            const PayoutLog = require('../models/PayoutLog');
+            await PayoutLog.create({
+                transaction_id: tx._id.toString(),
+                owner_id: ownerIdUpper,
+                owner_name: booking.owner_name || owner?.name || 'Owner',
+                amount: ownerAmt,
+                mode: 'bank',
+                status: 'sandbox_success',
+                account_holder: owner?.profile?.name || 'Owner',
+                account_number: owner?.profile?.accountNumber || 'N/A',
+                ifsc_code: owner?.profile?.ifscCode || 'N/A',
+                bank_name: owner?.profile?.bankName || 'N/A',
+                payout_id: payoutReference
+            });
+            console.log(`✅ Automatically generated sandbox payout log for owner ${ownerIdUpper}`);
+
+            // Send notification to Owner that payout was auto-created and processed
+            await Notification.create({
+                toLoginId: ownerIdUpper,
+                toRole: 'owner',
+                from: 'system',
+                type: 'payout',
+                meta: {
+                    bookingId: booking._id.toString(),
+                    amount: ownerAmt,
+                    title: 'Payout Processed Automatically',
+                    message: `Your share of INR ${ownerAmt} (gross payment INR ${amt} minus ${commPct}% commission) has been processed and paid out automatically.`
+                },
+                read: false
+            });
+
         } catch (ptErr) {
-            console.error('⚠️ Failed to create PaymentTransaction:', ptErr.message);
+            console.error('⚠️ Failed to complete Auto-Payout or create transaction:', ptErr.message);
         }
 
         res.status(200).json({
             success: true,
-            message: 'Payment confirmed and booking updated successfully',
+            message: 'Payment confirmed, booking updated, and owner payout auto-processed',
             data: booking
         });
     } catch (error) {

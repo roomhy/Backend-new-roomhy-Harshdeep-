@@ -155,11 +155,15 @@ app.use((req, res, next) => {
 const mongoOptions = {
     serverSelectionTimeoutMS: 30000,
     connectTimeoutMS: 30000,
-    socketTimeoutMS: 30000,
-    family: 4, // Force IPv4 to avoid DNS resolution delays
+    socketTimeoutMS: 120000,      // 2 min — prevents idle disconnect
+    family: 4,                    // Force IPv4 to avoid DNS resolution delays
     waitQueueTimeoutMS: 30000,
-    heartbeatFrequencyMS: 10000,
+    heartbeatFrequencyMS: 30000,  // Check every 30s (not 10s) — less noisy
+    maxPoolSize: 10,              // Keep connection pool alive
+    minPoolSize: 2,               // Always keep min 2 connections open
+    maxIdleTimeMS: 60000,         // Close idle connections after 60s (Atlas limit is higher)
     retryWrites: true,
+    retryReads: true,
     w: 'majority'
 };
 
@@ -216,7 +220,19 @@ mongoose.connection.on('connected', () => {
     }
 });
 mongoose.connection.on('error', (err) => console.error('❌ Mongoose error', err && err.message));
-mongoose.connection.on('disconnected', () => console.warn('⚠️ Mongoose disconnected'));
+mongoose.connection.on('disconnected', () => {
+    console.warn('⚠️ Mongoose disconnected — attempting auto-reconnect in 5s...');
+    setTimeout(async () => {
+        try {
+            if (mongoose.connection.readyState === 0) {
+                await mongoose.connect(mongoUri, mongoOptions);
+                console.log('✅ Mongoose auto-reconnected after disconnect');
+            }
+        } catch (err) {
+            console.error('❌ Auto-reconnect failed:', err.message);
+        }
+    }, 5000);
+});
 mongoose.connection.on('reconnected', () => console.log('✅ Mongoose reconnected'));
 
 // Routes (API Endpoints)
@@ -261,6 +277,10 @@ try {
     console.log('  ✓ kycRoutes (as /api/signups)');
     app.use('/api/cities', require('./routes/citiesRoutes'));
     console.log('  ✓ citiesRoutes');
+    app.use('/api/seo', require('./routes/seoRoutes'));
+    console.log('  ✓ seoRoutes');
+    app.use('/api/page-layouts', require('./routes/pageLayoutRoutes'));
+    console.log('  ✓ pageLayoutRoutes');
     app.use('/api/property-types', require('./routes/propertyTypeRoutes'));
     console.log('  ✓ propertyTypeRoutes');
     app.use('/api/locations', require('./routes/locationRoutes'));

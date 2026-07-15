@@ -84,9 +84,9 @@ chatMessageSchema.pre('save', async function(next) {
 
     const settings = await ChatSettings.findOne({ ownerLoginId: 'SUPER_ADMIN' });
     
-    // Default values if settings are not found
-    const strict = settings ? settings.strictModeration : true;
-    const blockContact = settings ? settings.blockContactSharing : true;
+    // Default values if settings are not found (fallback to true)
+    const strict = settings ? settings.strictModeration !== false : true;
+    const blockContact = settings ? settings.blockContactSharing !== false : true;
 
     if (!strict && !blockContact) {
       return next();
@@ -111,7 +111,7 @@ chatMessageSchema.pre('save', async function(next) {
     if (blockContact) {
       const phoneRegex = /(\+?\d{1,4}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
       const cleanDigits = msgText.replace(/\s+/g, '').replace(/[-()]/g, '');
-      const hasTenDigits = /\b\d{10}\b/.test(cleanDigits) || /\b(91|0)\d{10}\b/.test(cleanDigits);
+      const hasTenDigits = /\d{10}/.test(cleanDigits) || /\b(91|0)\d{10}\b/.test(cleanDigits);
       
       phoneRegex.lastIndex = 0;
       const hasPhonePattern = phoneRegex.test(msgText);
@@ -124,7 +124,7 @@ chatMessageSchema.pre('save', async function(next) {
         const spacedDigitsRegex = /(\d\s*){10,12}/g;
         msgText = msgText.replace(spacedDigitsRegex, '[MASKED PHONE]');
         
-        const rawTenDigitsRegex = /\b\d{10}\b/g;
+        const rawTenDigitsRegex = /\d{10}/g;
         msgText = msgText.replace(rawTenDigitsRegex, '[MASKED PHONE]');
       }
     }

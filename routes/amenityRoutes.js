@@ -22,7 +22,7 @@ router.get('/', async (req, res) => {
 // Create amenity
 router.post('/', protect, authorize('superadmin'), async (req, res) => {
   try {
-    const { name, icon, category, description, status } = req.body;
+    const { name, icon, iconSvg, category, description, status } = req.body;
     
     if (!name) {
       return res.status(400).json({ success: false, message: 'Name is required' });
@@ -36,6 +36,7 @@ router.post('/', protect, authorize('superadmin'), async (req, res) => {
     const amenity = new Amenity({
       name,
       icon: icon || 'check',
+      iconSvg: iconSvg || '',
       category: category || 'basic',
       description: description || '',
       status: status || 'Active'
@@ -53,11 +54,12 @@ router.post('/', protect, authorize('superadmin'), async (req, res) => {
 router.put('/:id', protect, authorize('superadmin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, icon, category, description, status } = req.body;
+    const { name, icon, iconSvg, category, description, status } = req.body;
     
     const updateData = {};
     if (name) updateData.name = name;
     if (icon) updateData.icon = icon;
+    if (iconSvg !== undefined) updateData.iconSvg = iconSvg;
     if (category) updateData.category = category;
     if (description !== undefined) updateData.description = description;
     if (status) updateData.status = status;

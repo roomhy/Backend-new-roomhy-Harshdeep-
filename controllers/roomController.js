@@ -201,7 +201,7 @@ exports.getRoomsByProperty = async (req, res) => {
         }
 
         const query = { property: new mongoose.Types.ObjectId(propertyId), isDeleted: { $ne: true } };
-        let roomsQuery = Room.find(query);
+        let roomsQuery = Room.find(query).populate('property', 'title');
         
         if (limit > 0) {
             roomsQuery = roomsQuery.skip((page - 1) * limit).limit(limit);

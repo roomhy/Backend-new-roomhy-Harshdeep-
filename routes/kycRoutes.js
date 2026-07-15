@@ -5,7 +5,7 @@ const User = require('../models/user');
 const jwt = require('jsonwebtoken');
 const mailer = require('../utils/mailer');
 const { notifySuperadmin } = require('../utils/superadminNotifier');
-const { formLimiter, otpLimiter, captchaProtection } = require('../middleware/security');
+const { formLimiter, otpLimiter, otpIpLimiter, captchaProtection } = require('../middleware/security');
 const { sendOTPSMS, formatPhoneNumber } = require('../utils/smsService');
 const { protect, authorize } = require('../middleware/authMiddleware');
 
@@ -64,7 +64,7 @@ function renderLoginOtpHtml(firstName, otp) {
 }
 
 // Request OTP for website signup
-router.post('/signup/request-otp', otpLimiter, captchaProtection({ required: false }), async (req, res) => {
+router.post('/signup/request-otp', otpIpLimiter, otpLimiter, captchaProtection({ required: false }), async (req, res) => {
     try {
         const firstName = (req.body.firstName || '').toString().trim();
         const lastName = (req.body.lastName || '').toString().trim();
@@ -304,7 +304,7 @@ router.post('/signup/verify-and-create', async (req, res) => {
 });
 
 // Request OTP for website login using email from new signups
-router.post('/login/request-otp', otpLimiter, captchaProtection({ required: false }), async (req, res) => {
+router.post('/login/request-otp', otpIpLimiter, otpLimiter, captchaProtection({ required: false }), async (req, res) => {
     try {
         const email = (req.body.email || '').toString().trim().toLowerCase();
         if (!email) {

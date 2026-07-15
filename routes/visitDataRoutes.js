@@ -550,7 +550,8 @@ router.post('/approve', async (req, res) => {
                 locationCode: propertyLocationCode || 'GEN',
                 ownerLoginId: finalLoginId,
                 status: 'active',
-                isPublished: propertyHasVacancy
+                isPublished: propertyHasVacancy,
+                roomTypes: visit.roomTypes || []
             });
         } else {
             ownerProperty.description = visit.description || ownerProperty.description || '';
@@ -571,6 +572,9 @@ router.post('/approve', async (req, res) => {
             ownerProperty.ownerLoginId = finalLoginId;
             ownerProperty.status = 'active';
             ownerProperty.isPublished = propertyHasVacancy;
+            if (visit.roomTypes && visit.roomTypes.length > 0) {
+                ownerProperty.roomTypes = visit.roomTypes;
+            }
             await ownerProperty.save();
         }
 
@@ -598,6 +602,7 @@ router.post('/approve', async (req, res) => {
                     genderSuitability: visit.gender || (visit.propertyInfo && visit.propertyInfo.genderSuitability) || '',
                     propertyType: visit.propertyType || (visit.propertyInfo && visit.propertyInfo.propertyType) || ''
                 },
+                roomTypes: visit.roomTypes || [],
                 professionalPhotos: visit.professionalPhotos || [],
                 generatedCredentials: {
                     loginId: finalLoginId,
@@ -816,7 +821,8 @@ router.post('/submit', async (req, res) => {
             cleanlinessNote,
             ownerBehaviour,
             latitude,
-            longitude
+            longitude,
+            roomTypes
         } = req.body;
 
         // Support both old and new formats
@@ -879,6 +885,7 @@ router.post('/submit', async (req, res) => {
             ownerCity: ownerCity || city,
             photos: (photos && Array.isArray(photos)) ? photos : (photos ? [photos] : []),
             professionalPhotos: (professionalPhotos && Array.isArray(professionalPhotos)) ? professionalPhotos : (professionalPhotos ? [professionalPhotos] : []),
+            roomTypes: (roomTypes && Array.isArray(roomTypes)) ? roomTypes : [],
             status: 'submitted',
             // Additional fields from old format
             ...(staffId && { staffId }),

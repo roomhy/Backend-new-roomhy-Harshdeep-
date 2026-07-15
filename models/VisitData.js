@@ -72,6 +72,15 @@ const VisitDataSchema = new mongoose.Schema({
     cookingAllowed: Boolean,
     smokingAllowed: Boolean,
     petsAllowed: Boolean,
+    roomTypes: [{
+        type: { type: String },
+        desc: { type: String },
+        totalRooms: { type: String },
+        totalBeds: { type: String },
+        occupancy: { type: Number },
+        pricePerBed: { type: String },
+        pricePerRoom: { type: String }
+    }],
     
     // Internal Notes
     internalRemarks: String,

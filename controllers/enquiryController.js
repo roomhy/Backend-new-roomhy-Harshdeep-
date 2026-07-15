@@ -64,8 +64,77 @@ exports.createEnquiry = async (req, res) => {
 exports.listEnquiries = async (req, res) => {
   try {
     const { ownerLoginId } = req.params;
-    const enquiries = await Enquiry.find({ ownerLoginId }).sort({ ts: -1 });
-    res.json(enquiries);
+    const normalizedOwnerId = String(ownerLoginId || '').toUpperCase();
+
+    // 1. Fetch enquiries from Enquiry collection
+    const enquiries = await Enquiry.find({ ownerLoginId }).sort({ ts: -1 }).lean();
+
+    // 2. Fetch booking requests from BookingRequest collection
+    const BookingRequest = require('../models/BookingRequest');
+    const bookingRequests = await BookingRequest.find({
+      $or: [
+        { owner_id: normalizedOwnerId },
+        { owner_id: ownerLoginId }
+      ]
+    }).sort({ created_at: -1 }).lean();
+
+    // 3. Fetch tenants to see who has moved in (onboarded)
+    const Tenant = require('../models/Tenant');
+    const tenants = await Tenant.find({
+      $or: [
+        { ownerLoginId: normalizedOwnerId },
+        { ownerLoginId: ownerLoginId }
+      ],
+      isDeleted: { $ne: true }
+    }).lean();
+
+    const activeTenantPhones = new Set(tenants.map(t => String(t.phone || '').replace(/\D/g, '')));
+    const activeTenantEmails = new Set(tenants.map(t => String(t.email || '').toLowerCase().trim()).filter(Boolean));
+
+    // 4. Map booking requests to Enquiry structure
+    const mappedBookings = bookingRequests.map(b => {
+      const cleanPhone = String(b.phone || '').replace(/\D/g, '');
+      const cleanEmail = String(b.email || '').toLowerCase().trim();
+      const isMovedIn = (cleanPhone && activeTenantPhones.has(cleanPhone)) || (cleanEmail && activeTenantEmails.has(cleanEmail));
+
+      return {
+        _id: b._id,
+        ownerLoginId: b.owner_id,
+        propertyId: b.property_id,
+        propertyName: b.property_name,
+        studentId: b.user_id,
+        studentName: b.name,
+        studentEmail: b.email,
+        studentPhone: b.phone,
+        location: b.area ? (b.city ? `${b.area}, ${b.city}` : b.area) : (b.city || ''),
+        status: isMovedIn ? 'confirmed' : (b.booking_status || b.status || 'pending'),
+        paidAmount: b.payment_amount || b.rent_amount || b.total_amount || 0,
+        ts: b.created_at || b.createdAt || new Date(),
+        source: b.request_type ? (b.request_type.charAt(0).toUpperCase() + b.request_type.slice(1)) : 'Website',
+        interest: b.property_type || b.interest || 'Any Room',
+        budget: b.request_type === 'bid' ? `₹${(b.bid_amount || 0).toLocaleString("en-IN")}` : `₹${(b.rent_amount || b.total_amount || 0).toLocaleString("en-IN")}`,
+        notes: b.message || '',
+        isBookingRequest: true
+      };
+    });
+
+    // 5. Also check Enquiries for moved in status
+    const mappedEnquiries = enquiries.map(e => {
+      const cleanPhone = String(e.studentPhone || '').replace(/\D/g, '');
+      const cleanEmail = String(e.studentEmail || '').toLowerCase().trim();
+      const isMovedIn = (cleanPhone && activeTenantPhones.has(cleanPhone)) || (cleanEmail && activeTenantEmails.has(cleanEmail));
+
+      return {
+        ...e,
+        status: isMovedIn ? 'confirmed' : e.status
+      };
+    });
+
+    // 6. Merge and sort by timestamp
+    const allLeads = [...mappedEnquiries, ...mappedBookings];
+    allLeads.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+
+    res.json(allLeads);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -76,18 +145,43 @@ exports.updateEnquiry = async (req, res) => {
   try {
     const { id } = req.params;
     const update = req.body;
-    // If status is accepted, enable chat
-    if (update.status === 'accepted') {
-      update.chatOpen = true;
-      update.visitAllowed = true;
+
+    // 1. Try to find and update in Enquiry collection
+    let enquiry = await Enquiry.findById(id);
+    if (enquiry) {
+      if (update.status === 'accepted') {
+        update.chatOpen = true;
+        update.visitAllowed = true;
+      }
+      if (update.status === 'rejected') {
+        update.chatOpen = false;
+        update.visitAllowed = false;
+      }
+      enquiry = await Enquiry.findByIdAndUpdate(id, update, { new: true });
+      return res.json(enquiry);
     }
-    if (update.status === 'rejected') {
-      update.chatOpen = false;
-      update.visitAllowed = false;
+
+    // 2. Try to find and update in BookingRequest collection
+    const BookingRequest = require('../models/BookingRequest');
+    let bookingReq = await BookingRequest.findById(id);
+    if (bookingReq) {
+      const bStatus = update.status;
+      const bUpdate = {
+        status: bStatus,
+        booking_status: bStatus,
+        bookingStatus: bStatus,
+        updated_at: Date.now()
+      };
+      bookingReq = await BookingRequest.findByIdAndUpdate(id, bUpdate, { new: true });
+      return res.json({
+        _id: bookingReq._id,
+        ownerLoginId: bookingReq.owner_id,
+        status: bookingReq.booking_status || bookingReq.status,
+        isBookingRequest: true
+      });
     }
-    const enquiry = await Enquiry.findByIdAndUpdate(id, update, { new: true });
-    if (!enquiry) return res.status(404).json({ error: 'Enquiry not found' });
-    res.json(enquiry);
+
+    return res.status(404).json({ error: 'Enquiry/Booking Request not found' });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
