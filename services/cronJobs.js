@@ -102,8 +102,8 @@ async function initDemoOwner() {
     }
 }
 
-// Reset DEMO account data every night at midnight
-const demoResetSchedule = cron.schedule('0 0 * * *', async () => {
+// Reset DEMO account data every night at 12:00 AM IST (18:30 UTC)
+const demoResetSchedule = cron.schedule('30 18 * * *', async () => {
     if (!Owner || !Property) return;
     console.log('🔄 Running daily reset for ROOMHY0000 account...');
     try {
@@ -153,8 +153,29 @@ const demoResetSchedule = cron.schedule('0 0 * * *', async () => {
             demoOwner.occupiedRooms = 0;
             demoOwner.occupiedBeds = 0;
             demoOwner.roomInventory = [];
+            // ✅ Always force active after reset (even if someone deactivated it)
+            demoOwner.isActive = true;
+            demoOwner.isDeleted = false;
             await demoOwner.save();
+        } else {
+            // Owner missing — recreate it
+            await Owner.create({
+                loginId: demoLoginId,
+                name: 'Demo Owner',
+                email: 'demo@roomhy.com',
+                phone: '0000000000',
+                isActive: true,
+                isDeleted: false,
+                credentials: { password: 'demo123', firstTime: false }
+            });
         }
+
+        // 5. Also ensure User auth record is active after reset
+        const User = require('../models/user');
+        await User.updateOne(
+            { loginId: demoLoginId },
+            { $set: { isActive: true, status: 'active', requirePasswordReset: false } }
+        );
 
         console.log('✅ Successfully wiped and reset ROOMHY0000 account data.');
     } catch (err) {
