@@ -45,15 +45,23 @@ exports.createRoom = async (req, res) => {
         const price = Number(req.body.price || req.body.rent || req.body.roomRent || 0);
         const user = req.user;
         if (!user) return res.status(401).json({ message: 'Auth required' });
-        if (user.role !== 'owner') return res.status(403).json({ message: 'Only owners can add rooms' });
+        if (!['owner', 'propertyowner', 'manager', 'superadmin'].includes(user.role)) {
+            return res.status(403).json({ message: 'Only owners can add rooms' });
+        }
         if (!propertyId) return res.status(400).json({ message: 'Property ID is required' });
         if (!title || !String(title).trim()) return res.status(400).json({ message: 'Room title is required' });
 
         const property = await Property.findById(propertyId).lean();
         if (!property) return res.status(404).json({ message: 'Property not found' });
+
+        // Superadmin can add to any property
+        // Owner must own the property (match by _id OR by loginId OR by ownerLoginId in request body)
+        const requestOwnerLoginId = String(req.body.ownerLoginId || user.loginId || '').toUpperCase();
         const ownerMatches =
+            user.role === 'superadmin' ||
             (property.owner && property.owner.toString() === user._id.toString()) ||
-            (property.ownerLoginId && String(property.ownerLoginId).toUpperCase() === String(user.loginId || '').toUpperCase());
+            (property.ownerLoginId && String(property.ownerLoginId).toUpperCase() === String(user.loginId || '').toUpperCase()) ||
+            (property.ownerLoginId && requestOwnerLoginId && String(property.ownerLoginId).toUpperCase() === requestOwnerLoginId);
         if (!ownerMatches) {
             return res.status(403).json({ message: 'You can only add rooms to your assigned property' });
         }
@@ -127,16 +135,21 @@ exports.bulkCreateRooms = async (req, res) => {
         const { propertyId, rooms } = req.body;
         const user = req.user;
         if (!user) return res.status(401).json({ message: 'Auth required' });
-        if (user.role !== 'owner') return res.status(403).json({ message: 'Only owners can add rooms' });
+        if (!['owner', 'propertyowner', 'manager', 'superadmin'].includes(user.role)) {
+            return res.status(403).json({ message: 'Only owners can add rooms' });
+        }
         if (!propertyId) return res.status(400).json({ message: 'Property ID is required' });
         if (!Array.isArray(rooms) || rooms.length === 0) return res.status(400).json({ message: 'Rooms array is required' });
 
         const property = await Property.findById(propertyId).lean();
         if (!property) return res.status(404).json({ message: 'Property not found' });
-        
+
+        const requestOwnerLoginId = String(req.body.ownerLoginId || user.loginId || '').toUpperCase();
         const ownerMatches =
+            user.role === 'superadmin' ||
             (property.owner && property.owner.toString() === user._id.toString()) ||
-            (property.ownerLoginId && String(property.ownerLoginId).toUpperCase() === String(user.loginId || '').toUpperCase());
+            (property.ownerLoginId && String(property.ownerLoginId).toUpperCase() === String(user.loginId || '').toUpperCase()) ||
+            (property.ownerLoginId && requestOwnerLoginId && String(property.ownerLoginId).toUpperCase() === requestOwnerLoginId);
         if (!ownerMatches) {
             return res.status(403).json({ message: 'You can only add rooms to your assigned property' });
         }

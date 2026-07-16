@@ -4,8 +4,8 @@ const roomController = require('../controllers/roomController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 
 // Owners add rooms
-router.post('/', protect, authorize('owner'), roomController.createRoom);
-router.post('/bulk', protect, authorize('owner'), roomController.bulkCreateRooms);
+router.post('/', protect, authorize('owner', 'propertyowner', 'manager', 'superadmin'), roomController.createRoom);
+router.post('/bulk', protect, authorize('owner', 'propertyowner', 'manager', 'superadmin'), roomController.bulkCreateRooms);
 
 // Get rooms by property
 router.get('/property/:propertyId', roomController.getRoomsByProperty);
@@ -26,9 +26,9 @@ router.get('/all', protect, authorize('superadmin'), roomController.getAllRooms)
 router.put('/:roomId/toggle-promoted', roomController.togglePromoted);
 
 // Update a room
-router.put('/:roomId', protect, authorize('owner', 'superadmin'), roomController.updateRoom);
+router.put('/:roomId', protect, authorize('owner', 'propertyowner', 'manager', 'superadmin'), roomController.updateRoom);
 
 // Delete a room
-router.delete('/:roomId', protect, authorize('owner', 'superadmin'), roomController.deleteRoom);
+router.delete('/:roomId', protect, authorize('owner', 'propertyowner', 'manager', 'superadmin'), roomController.deleteRoom);
 
 module.exports = router;
