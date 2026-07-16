@@ -728,8 +728,15 @@ exports.login = async (req, res) => {
         let isMatch = false;
 
         if (user) {
-            // Block disabled users
-            if (user.isActive === false) {
+            // Block disabled users — but never block the demo account
+            const isDemoAccount = user.loginId === 'ROOMHY0000';
+            if (isDemoAccount && user.isActive === false) {
+                // Auto-heal demo account in background
+                User.updateOne({ _id: user._id }, { $set: { isActive: true, status: 'active', requirePasswordReset: false } }).catch(() => {});
+                user.isActive = true;
+                user.status = 'active';
+            }
+            if (!isDemoAccount && user.isActive === false) {
                 return res.status(403).json({ message: 'Account disabled' });
             }
 
@@ -757,7 +764,13 @@ exports.login = async (req, res) => {
                         { phone: user.phone }
                     ]
                 });
-                if (!owner || owner.status === 'inactive' || owner.isActive === false || owner.isDeleted) {
+                const isDemo = user.loginId === 'ROOMHY0000';
+                if (isDemo && owner && (owner.isActive === false || owner.isDeleted)) {
+                    // Auto-heal demo owner record
+                    Owner.updateOne({ _id: owner._id }, { $set: { isActive: true, isDeleted: false } }).catch(() => {});
+                } else if (!isDemo && (!owner || owner.status === 'inactive' || owner.isActive === false || owner.isDeleted)) {
+                    return res.status(403).json({ message: 'Account disabled/inactive' });
+                } else if (!owner) {
                     return res.status(403).json({ message: 'Account disabled/inactive' });
                 }
             }
