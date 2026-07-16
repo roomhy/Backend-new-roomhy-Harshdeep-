@@ -14,20 +14,38 @@ exports.protect = async (req, res, next) => {
 
     try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        let user = await User.findById(decoded.id).select('-password');
 
         console.log(`[AUTH DEBUG] Request URL: ${req.method} ${req.originalUrl}`);
         console.log(`[AUTH DEBUG] Decoded ID: ${decoded.id}, Role from token: ${decoded.role}`);
 
+        let user = null;
+
+        // Try findById first — but safely catch BSONError (e.g. ROOMHY0000 as _id)
+        try {
+            user = await User.findById(decoded.id).select('-password');
+        } catch (bsonErr) {
+            // _id is not a valid ObjectId — try loginId fallback
+            console.warn(`[AUTH DEBUG] findById failed for "${decoded.id}", trying loginId fallback`);
+            user = await User.findOne({ loginId: String(decoded.id).toUpperCase() }).select('-password');
+        }
+
         if (!user) {
             const AreaManager = require('../models/AreaManager');
-            user = await AreaManager.findById(decoded.id).select('-password');
+            try {
+                user = await AreaManager.findById(decoded.id).select('-password');
+            } catch (_) {
+                user = await AreaManager.findOne({ loginId: String(decoded.id).toUpperCase() }).select('-password');
+            }
             if (user) user.role = 'areamanager';
         }
 
         if (!user) {
             const Employee = require('../models/Employee');
-            user = await Employee.findById(decoded.id).select('-password');
+            try {
+                user = await Employee.findById(decoded.id).select('-password');
+            } catch (_) {
+                user = await Employee.findOne({ loginId: String(decoded.id).toUpperCase() }).select('-password');
+            }
             if (user) {
                 user.team = user.role;
                 user.role = user.role && user.role.toLowerCase() === 'manager' ? 'manager' : 'employee';
@@ -48,6 +66,7 @@ exports.protect = async (req, res, next) => {
         console.error(err);
         return res.status(401).json({ message: 'Not authorized, token invalid' });
     }
+
 };
 
 exports.authorize = (...roles) => {
