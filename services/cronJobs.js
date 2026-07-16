@@ -48,11 +48,25 @@ async function initDemoOwner() {
                 }
             });
             console.log(`✅ Demo owner profile created: ${demoLoginId}`);
-        } else if (!demo.credentials || !demo.credentials.password) {
-            // Patch existing broken demo account
-            demo.credentials = { password: 'demo123', firstTime: false };
-            await demo.save();
-            console.log('✅ Demo owner profile patched with credentials');
+        } else {
+            // Always ensure demo account stays active (auto-heal if deactivated)
+            let needsSave = false;
+            if (!demo.credentials || !demo.credentials.password) {
+                demo.credentials = { password: 'demo123', firstTime: false };
+                needsSave = true;
+            }
+            if (demo.isActive === false) {
+                demo.isActive = true;
+                needsSave = true;
+            }
+            if (demo.isDeleted === true) {
+                demo.isDeleted = false;
+                needsSave = true;
+            }
+            if (needsSave) {
+                await demo.save();
+                console.log('✅ Demo owner profile auto-healed (isActive/credentials restored)');
+            }
         }
 
         const User = require('../models/user');
@@ -70,9 +84,17 @@ async function initDemoOwner() {
                     requirePasswordReset: false
                 });
                 console.log(`✅ Demo owner auth record created: ${demoLoginId} / demo123`);
-            } else if (demoUser.requirePasswordReset !== false) {
-                demoUser.requirePasswordReset = false;
-                await demoUser.save();
+            } else {
+                // Auto-heal user auth record if needed
+                let userNeedsSave = false;
+                if (demoUser.requirePasswordReset !== false) { demoUser.requirePasswordReset = false; userNeedsSave = true; }
+                if (demoUser.isActive === false) { demoUser.isActive = true; userNeedsSave = true; }
+                if (demoUser.status !== 'active') { demoUser.status = 'active'; userNeedsSave = true; }
+                if (demoUser.isDeleted === true) { demoUser.isDeleted = false; userNeedsSave = true; }
+                if (userNeedsSave) {
+                    await demoUser.save();
+                    console.log('✅ Demo user auth record auto-healed');
+                }
             }
         }
     } catch (err) {
