@@ -25,4 +25,7 @@ router.post('/:tenantId/verify', protect, authorize('superadmin', 'areamanager')
 // POST /api/tenants/:tenantId/kyc — admin only (owner panel KYC update flow)
 router.post('/:tenantId/kyc', protect, authorize('superadmin', 'areamanager', 'owner'), auditTrail('tenants'), tenantController.updateTenantKyc);
 
+// PATCH /api/tenants/:tenantId — owner/admin can update tenant details (name, emergency contact, etc.)
+router.patch('/:tenantId', protect, authorize('superadmin', 'areamanager', 'owner'), auditTrail('tenants'), tenantController.updateTenant);
+
 module.exports = router;

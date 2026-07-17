@@ -701,6 +701,71 @@ exports.verifyTenant = async (req, res) => {
 };
 
 /**
+ * Update tenant details (general edit)
+ * PATCH /api/tenants/:tenantId
+ * Body: { name, phone, email, dob, gender, agreedRent, additional: { emergencyName, emergencyPhone, relationship, ... }, ... }
+ */
+exports.updateTenant = async (req, res) => {
+    try {
+        const { tenantId } = req.params;
+        const {
+            name, phone, email, dob, gender,
+            roomNo, bedNo, building, floor,
+            agreedRent, securityDepositTotal,
+            moveInDate, paymentFrequency,
+            idProof, additional,
+            remarks, occupation
+        } = req.body;
+
+        const tenant = await Tenant.findById(tenantId);
+        if (!tenant) {
+            return res.status(404).json({ success: false, message: 'Tenant not found' });
+        }
+
+        // Basic fields
+        if (name !== undefined) tenant.name = name;
+        if (phone !== undefined) tenant.phone = phone;
+        if (email !== undefined) tenant.email = email;
+        if (dob !== undefined) tenant.dob = dob;
+        if (gender !== undefined) tenant.gender = gender;
+        if (roomNo !== undefined) tenant.roomNo = roomNo;
+        if (bedNo !== undefined) tenant.bedNo = bedNo;
+        if (building !== undefined) tenant.building = building;
+        if (floor !== undefined) tenant.floor = floor;
+        if (agreedRent !== undefined) tenant.agreedRent = Number(agreedRent) || tenant.agreedRent;
+        if (securityDepositTotal !== undefined) tenant.securityDepositTotal = Number(securityDepositTotal) || tenant.securityDepositTotal;
+        if (moveInDate !== undefined) tenant.moveInDate = moveInDate ? new Date(moveInDate) : tenant.moveInDate;
+        if (paymentFrequency !== undefined) tenant.paymentFrequency = paymentFrequency;
+        if (remarks !== undefined) tenant.remarks = remarks;
+        if (occupation !== undefined) tenant.occupation = occupation;
+
+        // Emergency contact — frontend sends as additional.emergencyName / emergencyPhone / relationship
+        if (additional) {
+            if (!tenant.emergencyContact) tenant.emergencyContact = {};
+            if (additional.emergencyName !== undefined) tenant.emergencyContact.name = additional.emergencyName;
+            if (additional.emergencyPhone !== undefined) tenant.emergencyContact.phone = additional.emergencyPhone;
+            if (additional.relationship !== undefined) tenant.emergencyContact.relationship = additional.relationship;
+            if (additional.occupation !== undefined) tenant.occupation = additional.occupation;
+            if (additional.remarks !== undefined) tenant.remarks = additional.remarks;
+        }
+
+        tenant.updatedAt = new Date();
+        await tenant.save();
+
+        // Return updated tenant (without sensitive fields)
+        const updated = await Tenant.findById(tenantId)
+            .select(ALWAYS_EXCLUDED_PROJECTION)
+            .populate('property', 'title locationCode ownerLoginId')
+            .lean();
+
+        res.json({ success: true, message: 'Tenant updated successfully', tenant: updated });
+    } catch (error) {
+        console.error('updateTenant error:', error);
+        res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    }
+};
+
+/**
  * Update tenant KYC
  * POST /api/tenants/:tenantId/kyc
  * Body: { aadhar, idProofFile, addressProofFile }
