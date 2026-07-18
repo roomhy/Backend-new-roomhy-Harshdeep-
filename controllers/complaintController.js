@@ -42,7 +42,6 @@ exports.getTenantComplaints = async (req, res) => {
 exports.getOwnerComplaints = async (req, res) => {
     try {
         const { ownerLoginId } = req.params;
-        // Use exact uppercase match — all loginIds stored uppercase, so this hits the index
         const normalizedId = String(ownerLoginId || '').trim().toUpperCase();
 
         // Ensure we have an authenticated caller before enforcing owner rules.
