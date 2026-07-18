@@ -39,6 +39,10 @@ async function isCallerSuperadmin(req) {
 exports.getInbox = async (req, res) => {
   try {
     const loginId = normalizeLoginId(req.params.login_id);
+    // IDOR protection: only allow callers to get their own inbox unless they are superadmin
+    if (req.user.role !== 'superadmin' && String(req.user.loginId || '').toUpperCase() !== String(loginId).toUpperCase()) {
+        return res.status(403).json({ error: 'Forbidden: You cannot access other users\' inbox' });
+    }
     const searchQuery = String(req.query.search || '').trim().toLowerCase();
 
     if (!loginId) {
@@ -200,6 +204,17 @@ exports.getMessages = async (req, res) => {
   try {
     const { room_id } = req.params;
     
+    // IDOR protection: only allow superadmin or participant of the room
+    const callerId = String(req.user.loginId || '').toUpperCase();
+    const isRoomParticipant = String(room_id).toUpperCase() === callerId;
+    
+    const chatRoom = await ChatRoom.findOne({ room_id }).lean();
+    const isParticipant = chatRoom?.participants?.some(p => String(p.loginId).toUpperCase() === callerId);
+
+    if (req.user.role !== 'superadmin' && !isRoomParticipant && !isParticipant) {
+        return res.status(403).json({ error: 'Forbidden: You are not a participant in this room' });
+    }
+    
     if (!room_id) {
       return res.status(400).json({ error: 'room_id is required' });
     }
@@ -220,6 +235,14 @@ exports.getConversation = async (req, res) => {
   try {
     const user1 = String(req.query.user1 || '').trim();
     const user2 = String(req.query.user2 || '').trim();
+
+    // IDOR protection: only allow user1 or user2 to fetch the conversation unless superadmin
+    const callerId = String(req.user.loginId || '').toUpperCase();
+    if (req.user.role !== 'superadmin' && 
+        callerId !== String(user1).toUpperCase() && 
+        callerId !== String(user2).toUpperCase()) {
+        return res.status(403).json({ error: 'Forbidden: You cannot access this conversation' });
+    }
 
     if (!user1 || !user2) {
       return res.status(400).json({ error: 'user1 and user2 are required' });
@@ -269,6 +292,11 @@ exports.markAsRead = async (req, res) => {
     const { room_id } = req.params;
     const { sender } = req.query;
     
+    // IDOR protection: only allow caller to mark their own received messages as read
+    if (req.user.role !== 'superadmin' && String(req.user.loginId || '').toUpperCase() !== String(room_id).toUpperCase()) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+    
     const query = { room_id, is_read: false };
     if (sender) {
       const senderVariants = [...new Set([sender, sender.toLowerCase(), sender.toUpperCase()])];
@@ -309,6 +337,13 @@ exports.deleteMessage = async (req, res) => {
   try {
     const { message_id } = req.params;
     
+    // IDOR protection: only allow sender of message to delete it (or superadmin)
+    const msgObj = await ChatMessage.findById(message_id).lean();
+    if (!msgObj) return res.status(404).json({ error: 'Message not found' });
+    if (req.user.role !== 'superadmin' && String(msgObj.sender_login_id).toUpperCase() !== String(req.user.loginId || '').toUpperCase()) {
+        return res.status(403).json({ error: 'Forbidden: You cannot delete this message' });
+    }
+    
     await ChatMessage.findByIdAndDelete(message_id);
 
     res.json({ success: true });
@@ -322,6 +357,12 @@ exports.deleteMessage = async (req, res) => {
 exports.sendMessage = async (req, res) => {
   try {
     const { to_login_id, from_login_id, message_type, file_url } = req.body;
+    
+    // Impersonation protection: from_login_id must match authenticated caller's loginId
+    if (req.user.role !== 'superadmin' && String(req.user.loginId || '').toUpperCase() !== String(from_login_id).toUpperCase()) {
+        return res.status(403).json({ error: 'Forbidden: You cannot send messages as another user' });
+    }
+    
     let message = req.body.message;
 
     if (!to_login_id || !from_login_id) {
@@ -542,6 +583,14 @@ exports.deleteConversation = async (req, res) => {
   try {
     const user1 = String(req.query.user1 || '').trim();
     const user2 = String(req.query.user2 || '').trim();
+
+    // IDOR protection
+    const callerId = String(req.user.loginId || '').toUpperCase();
+    if (req.user.role !== 'superadmin' && 
+        callerId !== String(user1).toUpperCase() && 
+        callerId !== String(user2).toUpperCase()) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
 
     if (!user1 || !user2) {
       return res.status(400).json({ error: 'user1 and user2 are required' });

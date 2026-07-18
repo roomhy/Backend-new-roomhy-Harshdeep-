@@ -8,7 +8,7 @@ const { protect, authorize } = require('../middleware/authMiddleware');
 router.get('/verify/:token', visitorController.verifyByToken);
 
 // Owner panel — get all visitor logs for an owner
-router.get('/owner/:ownerLoginId', visitorController.getOwnerVisitors);
+router.get('/owner/:ownerLoginId', protect, authorize('owner', 'superadmin', 'areamanager', 'employee', 'manager'), visitorController.getOwnerVisitors);
 
 // Tenant self-service — get own visitor history (auth + ownership enforced in controller)
 router.get('/tenant/:loginId', protect, authorize('tenant', 'superadmin', 'areamanager'), visitorController.getTenantVisitorHistory);
@@ -18,10 +18,10 @@ router.get('/tenant/:loginId', protect, authorize('tenant', 'superadmin', 'aream
 router.post('/', protect, authorize('tenant'), visitorController.createVisitor);
 
 // Owner approves / rejects a pending visitor pass
-router.patch('/:id/approve', visitorController.approveVisitor);
-router.patch('/:id/reject',  visitorController.rejectVisitor);
+router.patch('/:id/approve', protect, authorize('owner', 'superadmin', 'employee', 'manager'), visitorController.approveVisitor);
+router.patch('/:id/reject',  protect, authorize('owner', 'superadmin', 'employee', 'manager'), visitorController.rejectVisitor);
 
 // Owner/admin updates visitor status (gate flows: Inside/Exited/Cancelled)
-router.patch('/:id/status', visitorController.updateVisitorStatus);
+router.patch('/:id/status', protect, authorize('owner', 'superadmin', 'employee', 'manager'), visitorController.updateVisitorStatus);
 
 module.exports = router;

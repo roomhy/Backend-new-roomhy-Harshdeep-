@@ -5,6 +5,7 @@ const chatManagementController = require('../controllers/chatManagementControlle
 const ChatRoom = require('../models/ChatRoom');
 const ChatMessage = require('../models/ChatMessage');
 const { chatLimiter } = require('../middleware/security');
+const { protect, authorize } = require('../middleware/authMiddleware');
 
 function normalizeWebsiteUserId(raw) {
     const value = String(raw || '').trim().toLowerCase();
@@ -129,53 +130,53 @@ router.post('/create', async (req, res) => {
     }
 });
 
-router.get('/inbox/:login_id', chatController.getInbox);
-router.get('/all-chats', chatController.getAllChats);
-router.get('/messages/:room_id', chatController.getMessages);
-router.get('/conversation', chatController.getConversation);
-router.post('/mark-read/:room_id', chatLimiter, chatController.markAsRead);
-router.post('/send', chatLimiter, chatController.sendMessage);
-router.get('/unread/:room_id', chatController.getUnreadCount);
-router.delete('/message/:message_id', chatController.deleteMessage);
-router.delete('/delete-conversation', chatController.deleteConversation);
+router.get('/inbox/:login_id', protect, chatController.getInbox);
+router.get('/all-chats', protect, authorize('superadmin'), chatController.getAllChats);
+router.get('/messages/:room_id', protect, chatController.getMessages);
+router.get('/conversation', protect, chatController.getConversation);
+router.post('/mark-read/:room_id', protect, chatLimiter, chatController.markAsRead);
+router.post('/send', protect, chatLimiter, chatController.sendMessage);
+router.get('/unread/:room_id', protect, chatController.getUnreadCount);
+router.delete('/message/:message_id', protect, chatController.deleteMessage);
+router.delete('/delete-conversation', protect, chatController.deleteConversation);
 
 // ─── ADMIN CHAT MANAGEMENT ───────────────────────────────────────────────
 
 // Moderation
-router.get('/admin/moderation', chatManagementController.getFlaggedMessages);
-router.put('/admin/moderation/:id/resolve', chatManagementController.resolveFlaggedMessage);
-router.get('/admin/moderation/:id/decrypt', chatManagementController.decryptMessage);
+router.get('/admin/moderation', protect, authorize('superadmin'), chatManagementController.getFlaggedMessages);
+router.put('/admin/moderation/:id/resolve', protect, authorize('superadmin'), chatManagementController.resolveFlaggedMessage);
+router.get('/admin/moderation/:id/decrypt', protect, authorize('superadmin'), chatManagementController.decryptMessage);
 
 // Templates
-router.get('/admin/templates', chatManagementController.getTemplates);
-router.post('/admin/templates', chatManagementController.createTemplate);
-router.put('/admin/templates/:id', chatManagementController.updateTemplate);
-router.delete('/admin/templates/:id', chatManagementController.deleteTemplate);
+router.get('/admin/templates', protect, authorize('superadmin'), chatManagementController.getTemplates);
+router.post('/admin/templates', protect, authorize('superadmin'), chatManagementController.createTemplate);
+router.put('/admin/templates/:id', protect, authorize('superadmin'), chatManagementController.updateTemplate);
+router.delete('/admin/templates/:id', protect, authorize('superadmin'), chatManagementController.deleteTemplate);
 
 // Settings
-router.get('/admin/settings', chatManagementController.getSettings);
-router.post('/admin/settings', chatManagementController.updateSettings);
+router.get('/admin/settings', protect, authorize('superadmin'), chatManagementController.getSettings);
+router.post('/admin/settings', protect, authorize('superadmin'), chatManagementController.updateSettings);
 
 // Lead → Chat Funnel
-router.get('/admin/funnel', chatManagementController.getFunnel);
-router.get('/admin/leads', chatManagementController.getLeadMappings);
-router.post('/admin/leads/map', chatManagementController.mapLead);
+router.get('/admin/funnel', protect, authorize('superadmin'), chatManagementController.getFunnel);
+router.get('/admin/leads', protect, authorize('superadmin'), chatManagementController.getLeadMappings);
+router.post('/admin/leads/map', protect, authorize('superadmin'), chatManagementController.mapLead);
 
 // Violations
-router.get('/admin/violations', chatManagementController.getViolations);
-router.post('/admin/violations/:id/resolve', chatManagementController.resolveViolation);
+router.get('/admin/violations', protect, authorize('superadmin'), chatManagementController.getViolations);
+router.post('/admin/violations/:id/resolve', protect, authorize('superadmin'), chatManagementController.resolveViolation);
 
 // Booking Conversion Tracker
-router.get('/admin/booking-tracker', chatManagementController.getBookingTracker);
+router.get('/admin/booking-tracker', protect, authorize('superadmin'), chatManagementController.getBookingTracker);
 
 // Analytics
-router.get('/admin/analytics', chatManagementController.getAnalytics);
-router.get('/admin/stagnant', chatManagementController.getStagnantChats);
+router.get('/admin/analytics', protect, authorize('superadmin'), chatManagementController.getAnalytics);
+router.get('/admin/stagnant', protect, authorize('superadmin'), chatManagementController.getStagnantChats);
 
 // Dispute Resolution
-router.get('/admin/disputes', chatManagementController.getDisputes);
-router.post('/admin/disputes', chatManagementController.createDispute);
-router.put('/admin/disputes/:id', chatManagementController.updateDispute);
+router.get('/admin/disputes', protect, authorize('superadmin'), chatManagementController.getDisputes);
+router.post('/admin/disputes', protect, authorize('superadmin'), chatManagementController.createDispute);
+router.put('/admin/disputes/:id', protect, authorize('superadmin'), chatManagementController.updateDispute);
 
 module.exports = router;
 

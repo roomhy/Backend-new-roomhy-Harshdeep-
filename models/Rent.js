@@ -61,6 +61,7 @@ const rentSchema = new mongoose.Schema({
     cashOtpCode: String,
     cashOtpExpiry: Date,
     cashOtpSentAt: Date,
+    cashOtpAttempts: { type: Number, default: 0 },
     
     // Reminder Tracking
     reminders: [

@@ -216,8 +216,16 @@ exports.forgotPasswordVerifyOTP = async (req, res) => {
             return res.status(401).json({ message: 'OTP has expired. Please request a new OTP.' });
         }
 
+        // Limit verification attempts to 5
+        otpData.attempts = (otpData.attempts || 0) + 1;
+        if (otpData.attempts > 5) {
+            otpStore.delete(email);
+            return res.status(401).json({ message: 'Too many invalid attempts. Please request a new OTP.' });
+        }
+        otpStore.set(email, otpData);
+
         if (otpData.otp !== otp) {
-            return res.status(401).json({ message: 'Invalid OTP. Please try again.' });
+            return res.status(401).json({ message: `Invalid OTP. Attempts remaining: ${5 - otpData.attempts}` });
         }
 
         // OTP verified - generate cryptographically secure transaction ID (jti)
@@ -430,7 +438,17 @@ exports.ownerForgotPasswordVerifyOTP = async (req, res) => {
             otpStore.delete(otpKey);
             return res.status(401).json({ message: 'OTP has expired' });
         }
-        if (otpData.otp !== otp) return res.status(401).json({ message: 'Invalid OTP' });
+        // Limit verification attempts to 5
+        otpData.attempts = (otpData.attempts || 0) + 1;
+        if (otpData.attempts > 5) {
+            otpStore.delete(otpKey);
+            return res.status(401).json({ message: 'Too many invalid attempts. Please request a new OTP.' });
+        }
+        otpStore.set(otpKey, otpData);
+
+        if (otpData.otp !== otp) {
+            return res.status(401).json({ message: `Invalid OTP. Attempts remaining: ${5 - otpData.attempts}` });
+        }
 
         // Generate cryptographically secure transaction ID (jti)
         const jti = crypto.randomBytes(16).toString('hex');
@@ -598,7 +616,17 @@ exports.tenantForgotPasswordVerifyOTP = async (req, res) => {
             otpStore.delete(otpKey);
             return res.status(401).json({ message: 'OTP has expired' });
         }
-        if (otpData.otp !== otp) return res.status(401).json({ message: 'Invalid OTP' });
+        // Limit verification attempts to 5
+        otpData.attempts = (otpData.attempts || 0) + 1;
+        if (otpData.attempts > 5) {
+            otpStore.delete(otpKey);
+            return res.status(401).json({ message: 'Too many invalid attempts. Please request a new OTP.' });
+        }
+        otpStore.set(otpKey, otpData);
+
+        if (otpData.otp !== otp) {
+            return res.status(401).json({ message: `Invalid OTP. Attempts remaining: ${5 - otpData.attempts}` });
+        }
 
         // Generate cryptographically secure transaction ID (jti)
         const jti = crypto.randomBytes(16).toString('hex');

@@ -909,6 +909,7 @@ exports.markCashReceivedByOwner = async (req, res) => {
         rent.cashOtpCode = otp;
         rent.cashOtpExpiry = expiry;
         rent.cashOtpSentAt = new Date();
+        rent.cashOtpAttempts = 0;
         rent.paymentMethod = 'cash';
         await rent.save();
 
@@ -954,8 +955,20 @@ exports.verifyCashPaymentOtp = async (req, res) => {
         if (new Date() > new Date(rent.cashOtpExpiry)) {
             return res.status(400).json({ success: false, message: 'OTP expired' });
         }
+
+        // Limit verification attempts to 5
+        rent.cashOtpAttempts = (rent.cashOtpAttempts || 0) + 1;
+        if (rent.cashOtpAttempts > 5) {
+            rent.cashOtpCode = undefined;
+            rent.cashOtpExpiry = undefined;
+            rent.cashRequestStatus = 'requested'; // reset status
+            await rent.save();
+            return res.status(400).json({ success: false, message: 'Too many invalid attempts. Please request the owner to resend OTP.' });
+        }
+        await rent.save();
+
         if (String(otp).trim() !== String(rent.cashOtpCode).trim()) {
-            return res.status(400).json({ success: false, message: 'Invalid OTP' });
+            return res.status(400).json({ success: false, message: `Invalid OTP. Attempts remaining: ${5 - rent.cashOtpAttempts}` });
         }
 
         rent.cashRequestStatus = 'paid';
