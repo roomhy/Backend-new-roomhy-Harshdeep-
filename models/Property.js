@@ -126,6 +126,13 @@ const PropertySchema = new mongoose.Schema({
 
   tenantDescription: { type: String },
   
+  seo: {
+    metaTitle: { type: String, default: "" },
+    metaKeywords: { type: String, default: "" },
+    metaDescriptions: { type: String, default: "" },
+    metaSchema: { type: String, default: "" }
+  },
+
   roomCount: { type: Number, default: 0 },
   bedCount: { type: Number, default: 0 },
   vacantRooms: { type: Number, default: 0 },

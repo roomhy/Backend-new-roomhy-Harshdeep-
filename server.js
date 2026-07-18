@@ -360,6 +360,7 @@ try {
     app.use('/api/tenant-gate', require('./routes/tenantGateRoutes'));
     console.log('  ✓ tenantGateRoutes');
     app.use('/api/user', require('./routes/userRoutes'));
+    app.use('/api/superadmin/finance', require('./routes/financeRoutes'));
     app.use('/api/superadmin', require('./routes/superadminRoutes'));
     app.use('/api/amenities', require('./routes/amenityRoutes'));
     console.log('  ? amenityRoutes');

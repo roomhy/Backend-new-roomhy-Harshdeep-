@@ -751,23 +751,88 @@ router.patch('/:id', protect, authorize('superadmin', 'areamanager', 'owner'), a
             }
         }
 
-        const allowedUpdates = [
+        // Update all top-level schema fields
+        const schemaFields = [
             'name', 'phone', 'email', 'dob', 'gender', 'guardianNumber',
             'roomNo', 'bedNo', 'moveInDate', 'agreedRent', 'paymentFrequency',
-            'status', 'kycStatus'
+            'status', 'kycStatus', 'baseRoomRent', 'securityDepositTotal',
+            'securityDepositPaid', 'securityDepositBalance', 'remarks', 'occupation', 'company',
+            'permanentAddress'
         ];
-        allowedUpdates.forEach(key => {
-            if (req.body[key] !== undefined) tenant[key] = req.body[key];
+        schemaFields.forEach(key => {
+            if (req.body[key] !== undefined) {
+                if (['agreedRent', 'baseRoomRent', 'securityDepositTotal', 'securityDepositPaid', 'securityDepositBalance'].includes(key)) {
+                    tenant[key] = req.body[key] !== '' && req.body[key] !== null ? Number(req.body[key]) : undefined;
+                } else if (key === 'moveInDate') {
+                    tenant[key] = req.body[key] ? new Date(req.body[key]) : undefined;
+                } else {
+                    tenant[key] = req.body[key];
+                }
+            }
         });
 
-        if (tenant.digitalCheckin && tenant.digitalCheckin.profile) {
-            if (req.body.name)                 tenant.digitalCheckin.profile.name        = req.body.name;
-            if (req.body.phone)                tenant.digitalCheckin.profile.phone       = req.body.phone;
-            if (req.body.email)                tenant.digitalCheckin.profile.email       = req.body.email;
-            if (req.body.roomNo !== undefined)  tenant.digitalCheckin.profile.roomNo     = req.body.roomNo;
-            if (req.body.agreedRent !== undefined) tenant.digitalCheckin.profile.agreedRent = Number(req.body.agreedRent);
-            tenant.markModified('digitalCheckin');
+        // Update emergencyContact fields
+        if (req.body.additional) {
+            const add = req.body.additional;
+            if (!tenant.emergencyContact) tenant.emergencyContact = {};
+            if (add.emergencyName !== undefined) tenant.emergencyContact.name = add.emergencyName;
+            if (add.emergencyPhone !== undefined) tenant.emergencyContact.phone = add.emergencyPhone;
+            if (add.relationship !== undefined) tenant.emergencyContact.relationship = add.relationship;
+            
+            // Sync permanentAddress, remarks, occupation, company if present in additional
+            if (add.permanentAddress !== undefined) tenant.permanentAddress = add.permanentAddress;
+            if (add.remarks !== undefined) tenant.remarks = add.remarks;
+            if (add.occupation !== undefined) tenant.occupation = add.occupation;
+            if (add.company !== undefined) tenant.company = add.company;
         }
+
+        // Update kyc details if idProof is passed
+        if (req.body.idProof) {
+            const ip = req.body.idProof;
+            if (!tenant.kyc) tenant.kyc = {};
+            if (ip.type !== undefined) tenant.kyc.idProof = ip.type;
+            if (ip.number !== undefined) {
+                tenant.kyc.idProofFile = ip.number;
+                tenant.kyc.aadhaarNumber = ip.number;
+                tenant.kyc.aadhar = ip.number;
+            }
+            if (ip.file !== undefined) {
+                tenant.kyc.idProofFile = ip.file;
+                tenant.kyc.aadharFile = ip.file;
+                tenant.kyc.aadhaarFront = ip.file;
+            }
+            tenant.markModified('kyc');
+        }
+
+        // Update digitalCheckin profile and agreementDetails
+        if (!tenant.digitalCheckin) tenant.digitalCheckin = {};
+        if (!tenant.digitalCheckin.profile) tenant.digitalCheckin.profile = {};
+        
+        tenant.digitalCheckin.profile.name = tenant.name;
+        tenant.digitalCheckin.profile.phone = tenant.phone;
+        tenant.digitalCheckin.profile.email = tenant.email;
+        tenant.digitalCheckin.profile.roomNo = tenant.roomNo;
+        tenant.digitalCheckin.profile.agreedRent = tenant.agreedRent;
+        tenant.digitalCheckin.profile.dob = tenant.dob;
+
+        if (!tenant.digitalCheckin.agreementDetails) tenant.digitalCheckin.agreementDetails = {};
+        const agd = tenant.digitalCheckin.agreementDetails;
+        
+        if (req.body.accommodationType !== undefined) agd.accommodationType = req.body.accommodationType;
+        if (req.body.minStay !== undefined) agd.minimumStayDuration = `${req.body.minStay} Months`;
+        if (req.body.noticePeriod !== undefined) agd.noticePeriodDays = req.body.noticePeriod;
+        if (req.body.rentDueDate !== undefined) agd.licenseFeeDueDate = req.body.rentDueDate;
+        if (req.body.lateFee !== undefined) agd.lateFee = req.body.lateFee;
+        if (req.body.licenseDuration !== undefined) agd.licenseDuration = `${req.body.licenseDuration} months`;
+        if (req.body.moveOutCharges !== undefined) agd.moveOutCharges = req.body.moveOutCharges;
+        if (req.body.noticePeriodCharges !== undefined) agd.noticePeriodCharges = req.body.noticePeriodCharges;
+        if (req.body.inclusions !== undefined) agd.inclusions = req.body.inclusions;
+        if (req.body.gstCharges !== undefined) agd.gstCharges = req.body.gstCharges;
+        if (req.body.propertyAddress !== undefined) agd.propertyAddress = req.body.propertyAddress;
+        if (req.body.permanentAddress !== undefined) agd.permanentAddress = req.body.permanentAddress;
+        if (tenant.securityDepositTotal !== undefined) agd.securityDeposit = tenant.securityDepositTotal;
+        
+        tenant.markModified('digitalCheckin');
 
         await tenant.save();
         res.json(tenant);

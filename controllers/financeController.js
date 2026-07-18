@@ -10,6 +10,8 @@ const Tenant = require('../models/Tenant');
 const Property = require('../models/Property');
 const BookingRequest = require('../models/BookingRequest');
 const Coupon = require('../models/Coupon');
+const NotificationLog = require('../models/NotificationLog');
+const Rent = require('../models/Rent');
 
 // Helper to get global system settings or create default
 async function getSettings() {
@@ -180,14 +182,15 @@ exports.getPayoutOptions = async (req, res) => {
 
 exports.updateOwnerPayoutOption = async (req, res) => {
   try {
-    const { loginId, bankName, accountNumber, ifscCode, checkoutTime } = req.body;
+    const { loginId, bankName, accountNumber, ifscCode, checkoutTime, payoutMode } = req.body;
     const owner = await Owner.findOne({ loginId });
     if (!owner) return res.status(404).json({ success: false, message: 'Owner not found' });
     
     if (!owner.profile) owner.profile = {};
-    owner.profile.bankName = bankName || owner.profile.bankName;
-    owner.profile.accountNumber = accountNumber || owner.profile.accountNumber;
-    owner.profile.ifscCode = ifscCode || owner.profile.ifscCode;
+    if (bankName) owner.profile.bankName = bankName;
+    if (accountNumber) owner.profile.accountNumber = accountNumber;
+    if (ifscCode) owner.profile.ifscCode = ifscCode;
+    if (payoutMode) owner.profile.payoutMode = payoutMode; // 'manual' or 'auto'
     
     if (checkoutTime) {
       if (!owner.settings) owner.settings = {};
@@ -714,6 +717,74 @@ exports.getTransactionsReport = async (req, res) => {
   try {
     const txs = await PaymentTransaction.find({}).sort({ payment_date: -1 }).lean();
     res.json({ success: true, transactions: txs });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getRentDueRemindersAlerts = async (req, res) => {
+  try {
+    const logs = await NotificationLog.find({})
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .lean();
+    
+    const tenantIds = logs.map(l => l.tenantId).filter(Boolean);
+    const propertyIds = logs.map(l => l.propertyId).filter(Boolean);
+    
+    const [tenants, properties] = await Promise.all([
+      Tenant.find({ _id: { $in: tenantIds } }).select('name phone email').lean(),
+      Property.find({ _id: { $in: propertyIds } }).select('name').lean()
+    ]);
+    
+    const tenantMap = tenants.reduce((acc, t) => ({ ...acc, [t._id.toString()]: t }), {});
+    const propMap = properties.reduce((acc, p) => ({ ...acc, [p._id.toString()]: p }), {});
+    
+    const enriched = logs.map(log => {
+      const t = tenantMap[log.tenantId?.toString()] || {};
+      const p = propMap[log.propertyId?.toString()] || {};
+      return {
+        ...log,
+        tenantName: t.name || log.payload?.tenantName || 'Unknown Tenant',
+        tenantPhone: t.phone || log.payload?.tenantPhone || 'N/A',
+        tenantEmail: t.email || log.payload?.tenantEmail || 'N/A',
+        propertyName: p.name || log.payload?.propertyName || 'Unknown Property'
+      };
+    });
+    
+    res.json({ success: true, alerts: enriched });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getPaymentAlerts = async (req, res) => {
+  try {
+    const txs = await PaymentTransaction.find({})
+      .sort({ payment_date: -1 })
+      .limit(200)
+      .lean();
+    res.json({ success: true, alerts: txs });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getPayoutAlerts = async (req, res) => {
+  try {
+    const logs = await PayoutLog.find({})
+      .sort({ created_at: -1 })
+      .limit(100)
+      .lean();
+      
+    const pendingTxs = await PaymentTransaction.find({
+      payout_status: { $in: ['Pending', 'Processing', 'Failed'] }
+    })
+      .sort({ payment_date: -1 })
+      .limit(100)
+      .lean();
+      
+    res.json({ success: true, logs, pending: pendingTxs });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

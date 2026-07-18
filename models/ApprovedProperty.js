@@ -215,6 +215,13 @@ const ApprovedPropertySchema = new mongoose.Schema({
     },
     tenantDescription: { type: String },
 
+    seo: {
+        metaTitle: { type: String, default: "" },
+        metaKeywords: { type: String, default: "" },
+        metaDescriptions: { type: String, default: "" },
+        metaSchema: { type: String, default: "" }
+    },
+    
     latitude: { type: Number },
     longitude: { type: Number },
 

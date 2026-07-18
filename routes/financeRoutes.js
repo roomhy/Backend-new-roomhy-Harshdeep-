@@ -59,4 +59,9 @@ router.get('/analytics/profit-loss', financeController.getProfitLoss);
 router.get('/analytics/cashflow', financeController.getCashflowDashboard);
 router.get('/analytics/transactions-report', financeController.getTransactionsReport);
 
+// Alerts routes
+router.get('/alerts/rent-due-reminders', financeController.getRentDueRemindersAlerts);
+router.get('/alerts/payments', financeController.getPaymentAlerts);
+router.get('/alerts/payouts', financeController.getPayoutAlerts);
+
 module.exports = router;

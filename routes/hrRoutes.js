@@ -87,8 +87,13 @@ router.post('/checkout', async (req, res) => {
         const checkOutTime = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
 
         let record = await StaffAttendance.findOne({ employeeId: emp._id, date: { $gte: today, $lt: tomorrow } });
-        if (record) {
+        if (record && record.checkIn) {
             record.checkOut = checkOutTime;
+            record.updatedAt = new Date();
+            await record.save();
+        } else if (record) {
+            record.status = 'Absent';
+            record.checkOut = undefined;
             record.updatedAt = new Date();
             await record.save();
         } else {
@@ -97,8 +102,7 @@ router.post('/checkout', async (req, res) => {
                 employeeLoginId: staffLoginId,
                 ownerLoginId: emp.parentLoginId,
                 date: today,
-                status: 'Present',
-                checkOut: checkOutTime
+                status: 'Absent'
             });
         }
         res.json({ success: true, data: record, checkOutTime });

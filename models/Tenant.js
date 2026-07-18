@@ -36,6 +36,7 @@ const TenantSchema = new mongoose.Schema({
         relationship: { type: String }
     },
     remarks: { type: String },
+    permanentAddress: { type: String },
     
     // Login Credentials (generated during assignment)
     loginId: { type: String, unique: true, sparse: true }, // e.g., ROOMHYTNT4821

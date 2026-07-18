@@ -68,6 +68,7 @@ const syncToApprovedProperty = async (property) => {
             pricing: property.pricing || {},
             policies: property.policies || {},
             tenantDescription: property.tenantDescription || "",
+            seo: property.seo || {},
             latitude: property.latitude,
             longitude: property.longitude,
             generatedCredentials: {
@@ -330,7 +331,7 @@ exports.approveOwnerChanges = async (req, res) => {
       'latitude', 'longitude', 'monthlyRent', 'discount', 'gender',
       'propertyType', 'images', 'propertyViews', 'amenities', 'facilities',
       'propertyDetails', 'pricing', 'policies', 'tenantDescription', 'roomTypes',
-      'contact', 'videoUrl'
+      'contact', 'videoUrl', 'seo'
     ];
     allowedFields.forEach(field => {
       if (changes[field] !== undefined) {

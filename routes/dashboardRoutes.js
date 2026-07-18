@@ -49,7 +49,7 @@ router.get('/:ownerId', async (req, res) => {
         );
 
         // ── PHASE 2: Parallel fetches ─────────────────────────────────────────────
-        // yaha pe fix kiya netwrok traffic 8 api await ko haat promise all krdiya
+        const loginRegex = new RegExp('^' + loginId + '$', 'i');
         const [
             ownerDoc,
             properties,
@@ -59,33 +59,33 @@ router.get('/:ownerId', async (req, res) => {
             transactions,
         ] = await Promise.all([
             // 1. Owner details (lean, no populate needed for dashboard)
-            Owner.findOne({ loginId }).lean(),
+            Owner.findOne({ loginId: loginRegex }).lean(),
 
             // 2. Properties (needed to derive property IDs for rooms/tenants/rent)
-            Property.find({ ownerLoginId: loginId, isDeleted: { $ne: true } })
+            Property.find({ ownerLoginId: loginRegex, isDeleted: { $ne: true } })
                 .select('_id title locationCode roomCount bedCount vacantRooms vacantBeds occupiedRooms occupiedBeds status isPublished')
                 .lean(),
 
             // 3. Enquiries — limit to 100 newest for dashboard
-            Enquiry.find({ ownerLoginId: loginId })
+            Enquiry.find({ ownerLoginId: loginRegex })
                 .sort({ ts: -1 })
                 .limit(100)
                 .lean(),
 
             // 4. Notifications — limit to 50 newest
-            Notification.find({ toLoginId: loginId })
+            Notification.find({ toLoginId: loginRegex })
                 .sort({ createdAt: -1 })
                 .limit(50)
                 .lean(),
 
-            // 5. Complaints — exact uppercase match (index hit), limit 50
-            Complaint.find({ ownerLoginId: loginId })
+            // 5. Complaints — exact match (index hit), limit 50
+            Complaint.find({ ownerLoginId: loginRegex })
                 .sort({ createdAt: -1 })
                 .limit(50)
                 .lean(),
 
             // 6. PaymentTransactions for rent calculation
-            PaymentTransaction.find({ owner_id: loginId })
+            PaymentTransaction.find({ owner_id: loginRegex })
                 .select('owner_amount')
                 .lean(),
         ]);
@@ -100,14 +100,20 @@ router.get('/:ownerId', async (req, res) => {
                 .limit(200)
                 .lean(),
 
-            // 8. Tenants for all owner properties
-            Tenant.find({ property: { $in: propertyIds }, isDeleted: { $ne: true } })
+            // 8. Tenants for all owner properties or matching ownerLoginId
+            Tenant.find({
+                $or: [
+                    { property: { $in: propertyIds } },
+                    { ownerLoginId: loginRegex }
+                ],
+                isDeleted: { $ne: true }
+            })
                 .lean(),
 
             // RentPayments require owner _id — re-use ownerDoc if available
-            ownerDoc ? Promise.resolve(ownerDoc) : Owner.findOne({ loginId }).lean(),
+            ownerDoc ? Promise.resolve(ownerDoc) : Owner.findOne({ loginId: loginRegex }).lean(),
 
-            // Also fetch complaint fallback via tenants (handled below outside Promise.all)
+            // Also fetch complaint fallback via tenants
             Promise.resolve(null),
         ]);
 

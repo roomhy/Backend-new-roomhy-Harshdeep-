@@ -74,6 +74,13 @@ const ownerSchema = new mongoose.Schema({
     city: String,
     locationCode: String, // e.g. area code like 'KO', 'IN'
     area: String, // human-friendly area name (Koramangala, Indiranagar)
+    // Top-level banking fields (populated by edit owner flow & controller merge)
+    bankName: String,
+    accountNumber: String,
+    ifscCode: String,
+    branchName: String,
+    // checkinEmail is the digital checkin email (may differ from profile email)
+    checkinEmail: String,
     // Nested profile object (preferred structure)
     profile: {
         name: String,
