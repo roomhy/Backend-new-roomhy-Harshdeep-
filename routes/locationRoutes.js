@@ -105,6 +105,6 @@ router.delete('/areas/:id', protect, authorize('superadmin'), locationController
 // ================== CONFIG ROUTES ==================
 
 // Get Cloudinary configuration
-router.get('/config/cloudinary', locationController.getCloudinaryConfig);
+router.get('/config/cloudinary', protect, locationController.getCloudinaryConfig);
 
 module.exports = router;
