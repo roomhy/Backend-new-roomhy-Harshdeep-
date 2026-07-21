@@ -29,7 +29,7 @@ exports.assignTenant = async (req, res) => {
             propertyAddress, permanentAddress
         } = req.body;
 
-        const depositTotal = Math.max(0, parseInt(securityDepositTotal, 10) || 0);
+        let depositTotal = Math.max(0, parseInt(securityDepositTotal, 10) || 0);
         const depositPaid = Math.max(0, parseInt(securityDepositPaid, 10) || 0);
         const explicitDepositBalance = parseInt(securityDepositBalance, 10);
         const depositBalance = Math.max(0, Number.isFinite(explicitDepositBalance) ? explicitDepositBalance : (depositTotal - depositPaid));
@@ -39,7 +39,7 @@ exports.assignTenant = async (req, res) => {
         const normalizedBedNo = bedNo != null
             ? String(bedNo).trim().replace(/^[Bb]ed\s*/i, '') || null
             : null;
-        
+
         let assignedPropertyTitle = String(propertyTitle || '').trim();
 
         const normalizedOwnerLoginId = String(ownerLoginId || '').toUpperCase();
@@ -86,7 +86,7 @@ exports.assignTenant = async (req, res) => {
 
         // Additional validation for emergency contact (optional for owner panel)
         const hasEmergencyInfo = additional && additional.emergencyName && additional.emergencyPhone && additional.relationship;
-        
+
         // If it's a superadmin request (usually has building/floor), we can be stricter, 
         // but for now let's just make it optional to avoid breaking the owner flow.
 
@@ -146,6 +146,12 @@ exports.assignTenant = async (req, res) => {
         const effectiveLocationCode = property.locationCode || String(locationCode || '').toUpperCase() || 'GEN';
         assignedPropertyTitle = String(assignedPropertyTitle || property.title || '').trim();
 
+        if (!depositTotal && property) {
+            const propDep = parseInt(property.pricing?.securityDeposit || property.securityDeposit, 10) || 0;
+            if (propDep > 0) depositTotal = propDep;
+        }
+        const depositBalance = Math.max(0, Number.isFinite(explicitDepositBalance) ? explicitDepositBalance : (depositTotal - depositPaid));
+
         // Find Room record if exists
         let roomObj = null;
         if (property && roomNo) {
@@ -169,7 +175,7 @@ exports.assignTenant = async (req, res) => {
             }
 
             // Also guard against stale bedAssignments: check Tenant collection directly
-            const activeTenantQuery = { property: property._id, roomNo, checkoutDate: null };
+            const activeTenantQuery = { property: property._id, roomNo, isDeleted: { $ne: true }, status: { $ne: 'inactive' } };
             if (normalizedBedNo) activeTenantQuery.bedNo = normalizedBedNo;
             const existingActiveTenant = await Tenant.findOne(activeTenantQuery).select('_id name').lean();
             if (existingActiveTenant) {
@@ -247,18 +253,18 @@ exports.assignTenant = async (req, res) => {
             kycStatus: idProof?.file ? 'submitted' : 'pending',
             digitalCheckin: {
                 agreementDetails: {
-                    ...(accommodationType    && { accommodationType }),
-                    ...(minStay              && { minimumStayDuration: `${minStay} Months` }),
-                    ...(noticePeriod         && { noticePeriodDays: noticePeriod }),
-                    ...(rentDueDate          && { licenseFeeDueDate: rentDueDate }),
-                    ...(lateFee              && { lateFee }),
-                    ...(licenseDuration      && { licenseDuration: `${licenseDuration} months` }),
-                    ...(moveOutCharges       != null && { moveOutCharges }),
-                    ...(noticePeriodCharges  != null && { noticePeriodCharges }),
-                    ...(inclusions           && { inclusions }),
-                    ...(gstCharges           != null && { gstCharges }),
-                    ...(propertyAddress      && { propertyAddress }),
-                    ...(permanentAddress     && { permanentAddress }),
+                    ...(accommodationType && { accommodationType }),
+                    ...(minStay && { minimumStayDuration: `${minStay} Months` }),
+                    ...(noticePeriod && { noticePeriodDays: noticePeriod }),
+                    ...(rentDueDate && { licenseFeeDueDate: rentDueDate }),
+                    ...(lateFee && { lateFee }),
+                    ...(licenseDuration && { licenseDuration: `${licenseDuration} months` }),
+                    ...(moveOutCharges != null && { moveOutCharges }),
+                    ...(noticePeriodCharges != null && { noticePeriodCharges }),
+                    ...(inclusions && { inclusions }),
+                    ...(gstCharges != null && { gstCharges }),
+                    ...(propertyAddress && { propertyAddress }),
+                    ...(permanentAddress && { permanentAddress }),
                     securityDeposit: depositTotal || 0
                 }
             }
@@ -283,26 +289,35 @@ exports.assignTenant = async (req, res) => {
         // Create Rent record for this tenant
         const rentAmount = parseInt(agreedRent);
         const rentPropertyName = assignedPropertyTitle || property.title || 'Property';
-        const rent = await Rent.create({
-            propertyName: rentPropertyName,
-            roomNumber: roomNo,
-            area: property.area || '-',
-            tenantName: name,
-            tenantEmail: email,
-            tenantPhone: phone,
-            tenantLoginId: loginId,
-            rentAmount: rentAmount,
-            totalDue: rentAmount,
-            paidAmount: 0,
-            paymentStatus: 'pending',
-            moveInDate: moveInDate ? new Date(moveInDate) : new Date(),
-            dueDate: moveInDate ? new Date(moveInDate) : new Date(),
-            createdAt: new Date()
-        });
+        const collectionMonth = new Date().toISOString().slice(0, 7);
+
+        let rent = await Rent.findOne({ tenantLoginId: loginId, collectionMonth });
+
+        if (!rent) {
+            rent = await Rent.create({
+                propertyName: rentPropertyName,
+                roomNumber: roomNo,
+                area: property.area || '-',
+                tenantName: name,
+                tenantEmail: email,
+                tenantPhone: phone,
+                tenantLoginId: loginId,
+                rentAmount: rentAmount,
+                totalDue: rentAmount,
+                paidAmount: 0,
+                paymentStatus: 'pending',
+                moveInDate: moveInDate ? new Date(moveInDate) : new Date(),
+                dueDate: moveInDate ? new Date(moveInDate) : new Date(),
+                collectionMonth: collectionMonth,
+                createdAt: new Date()
+            });
+            console.log(`[RENT RECORD CREATED] Rent ID: ${rent._id}, Amount: ₹${rentAmount}`);
+        } else {
+            console.log(`[RENT ALREADY EXISTS] Skipped duplicate rent generation for ${loginId} in ${collectionMonth}`);
+        }
 
         // Log notification for super admin
         console.log(`[TENANT ASSIGNED] ${name} (${loginId}) assigned to ${rentPropertyName}, Room ${roomNo}`);
-        console.log(`[RENT RECORD CREATED] Rent ID: ${rent._id}, Amount: ₹${rentAmount}`);
 
         // Send email to tenant with loginId, tempPassword and digital check-in link (non-blocking)
         const baseWebUrl = process.env.DIGITAL_CHECKIN_URL || process.env.APP_BASE_URL || process.env.APP_URL || process.env.FRONTEND_URL || 'https://app.roomhy.com';
@@ -418,7 +433,7 @@ exports.assignTenant = async (req, res) => {
 </html>
                 `;
                 const text = `Tenant account created.\nProperty: ${assignedPropertyTitle || property.title || '-'}\nRoom Number: ${roomNo || '-'}\nBed Number: ${bedNo || '-'}\nRent: INR ${parseInt(agreedRent || 0, 10)}\nSecurity Deposit Total: INR ${depositTotal}\nSecurity Deposit Paid: INR ${depositPaid}\nSecurity Deposit Balance: INR ${depositBalance}\nLogin ID: ${tenant.loginId}\nPassword: ${tenant.tempPassword}\nDigital Check-In: ${tenantCheckinLink}`;
-                
+
                 await mailer.sendMail(tenant.email, subject, text, html);
                 console.log(`[MAIL] Email sent successfully to ${tenant.email}`);
             }
@@ -597,18 +612,7 @@ exports.getTenantsByOwner = async (req, res) => {
         const { ownerId } = req.params;
         const normalizedId = String(ownerId).toUpperCase();
 
-        // Query 1: Direct ownerLoginId on Tenant model
-        const directTenants = await Tenant.find({
-            ownerLoginId: normalizedId,
-            isDeleted: { $ne: true }
-        })
-        .select(ALWAYS_EXCLUDED_PROJECTION)
-        .populate('property', 'title roomType locationCode owner ownerLoginId')
-        .populate('user', 'name email phone')
-        .sort({ createdAt: -1 })
-        .lean();
-
-        // Query 2: Via Property model (for older records)
+        // Resolve legacy property IDs (older records link via Property, not ownerLoginId)
         let propQuery = {};
         if (require('mongoose').Types.ObjectId.isValid(ownerId)) {
             propQuery.owner = ownerId;
@@ -617,22 +621,33 @@ exports.getTenantsByOwner = async (req, res) => {
         }
         const properties = await Property.find(propQuery).lean();
         const propertyIds = properties.map(p => p._id);
-        const propTenants = propertyIds.length > 0
-            ? await Tenant.find({ property: { $in: propertyIds }, isDeleted: { $ne: true } })
-                .select(ALWAYS_EXCLUDED_PROJECTION)
-                .populate('property', 'title roomType locationCode owner ownerLoginId')
-                .populate('user', 'name email phone')
-                .sort({ createdAt: -1 })
-                .lean()
-            : [];
 
-        // Merge + deduplicate by _id
-        const seen = new Set();
-        const tenants = [];
-        for (const t of [...directTenants, ...propTenants]) {
-            const id = String(t._id);
-            if (!seen.has(id)) { seen.add(id); tenants.push(t); }
+        // Single query covering both direct (ownerLoginId) and legacy (property-linked)
+        // tenants via $or, instead of two separate Tenant.find()+populate() round trips.
+        const allTenants = await Tenant.find({
+            isDeleted: { $ne: true },
+            $or: [
+                { ownerLoginId: normalizedId },
+                ...(propertyIds.length > 0 ? [{ property: { $in: propertyIds } }] : [])
+            ]
+        })
+            .select(ALWAYS_EXCLUDED_PROJECTION)
+            .populate('property', 'title roomType locationCode owner ownerLoginId')
+            .populate('user', 'name email phone')
+            .sort({ createdAt: -1 })
+            .lean();
+
+        // Reproduce the original ordering (direct matches first, then legacy-only matches).
+        // Each bucket is a subsequence of an already createdAt-desc-sorted array, so it
+        // stays sorted — concatenating them yields the exact same order as before, and
+        // since $or matches each document at most once, no dedup pass is needed.
+        const direct = [];
+        const legacyOnly = [];
+        for (const t of allTenants) {
+            if (t.ownerLoginId === normalizedId) direct.push(t);
+            else legacyOnly.push(t);
         }
+        const tenants = [...direct, ...legacyOnly];
 
         const tenantsWithDues = await enrichTenantsWithDues(tenants);
         res.json({ success: true, tenants: tenantsWithDues });
@@ -697,71 +712,6 @@ exports.verifyTenant = async (req, res) => {
     } catch (error) {
         console.error('verifyTenant error:', error);
         res.status(500).json({ success: false, message: 'Server error' });
-    }
-};
-
-/**
- * Update tenant details (general edit)
- * PATCH /api/tenants/:tenantId
- * Body: { name, phone, email, dob, gender, agreedRent, additional: { emergencyName, emergencyPhone, relationship, ... }, ... }
- */
-exports.updateTenant = async (req, res) => {
-    try {
-        const { tenantId } = req.params;
-        const {
-            name, phone, email, dob, gender,
-            roomNo, bedNo, building, floor,
-            agreedRent, securityDepositTotal,
-            moveInDate, paymentFrequency,
-            idProof, additional,
-            remarks, occupation
-        } = req.body;
-
-        const tenant = await Tenant.findById(tenantId);
-        if (!tenant) {
-            return res.status(404).json({ success: false, message: 'Tenant not found' });
-        }
-
-        // Basic fields
-        if (name !== undefined) tenant.name = name;
-        if (phone !== undefined) tenant.phone = phone;
-        if (email !== undefined) tenant.email = email;
-        if (dob !== undefined) tenant.dob = dob;
-        if (gender !== undefined) tenant.gender = gender;
-        if (roomNo !== undefined) tenant.roomNo = roomNo;
-        if (bedNo !== undefined) tenant.bedNo = bedNo;
-        if (building !== undefined) tenant.building = building;
-        if (floor !== undefined) tenant.floor = floor;
-        if (agreedRent !== undefined) tenant.agreedRent = Number(agreedRent) || tenant.agreedRent;
-        if (securityDepositTotal !== undefined) tenant.securityDepositTotal = Number(securityDepositTotal) || tenant.securityDepositTotal;
-        if (moveInDate !== undefined) tenant.moveInDate = moveInDate ? new Date(moveInDate) : tenant.moveInDate;
-        if (paymentFrequency !== undefined) tenant.paymentFrequency = paymentFrequency;
-        if (remarks !== undefined) tenant.remarks = remarks;
-        if (occupation !== undefined) tenant.occupation = occupation;
-
-        // Emergency contact — frontend sends as additional.emergencyName / emergencyPhone / relationship
-        if (additional) {
-            if (!tenant.emergencyContact) tenant.emergencyContact = {};
-            if (additional.emergencyName !== undefined) tenant.emergencyContact.name = additional.emergencyName;
-            if (additional.emergencyPhone !== undefined) tenant.emergencyContact.phone = additional.emergencyPhone;
-            if (additional.relationship !== undefined) tenant.emergencyContact.relationship = additional.relationship;
-            if (additional.occupation !== undefined) tenant.occupation = additional.occupation;
-            if (additional.remarks !== undefined) tenant.remarks = additional.remarks;
-        }
-
-        tenant.updatedAt = new Date();
-        await tenant.save();
-
-        // Return updated tenant (without sensitive fields)
-        const updated = await Tenant.findById(tenantId)
-            .select(ALWAYS_EXCLUDED_PROJECTION)
-            .populate('property', 'title locationCode ownerLoginId')
-            .lean();
-
-        res.json({ success: true, message: 'Tenant updated successfully', tenant: updated });
-    } catch (error) {
-        console.error('updateTenant error:', error);
-        res.status(500).json({ success: false, message: 'Server error', error: error.message });
     }
 };
 

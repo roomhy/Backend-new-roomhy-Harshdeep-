@@ -201,4 +201,7 @@ router.put('/:id/approve-changes', formLimiter, auditTrail('properties'), proper
 // Superadmin rejects owner pending changes
 router.put('/:id/reject-changes', formLimiter, auditTrail('properties'), propertyController.rejectOwnerChanges);
 
+// Superadmin assigns verification task to employee
+router.put('/:id/assign-verification', protect, authorize('superadmin'), propertyController.assignPropertyVerification);
+
 module.exports = router;

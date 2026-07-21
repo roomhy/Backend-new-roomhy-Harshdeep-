@@ -1528,13 +1528,16 @@ exports.confirmBooking = async (req, res) => {
             // Get setting
             let settings = await SystemSettings.findOne();
             let commPct = 10; // default
-            if (settings && typeof settings.commission_percentage === 'number') {
-                commPct = settings.commission_percentage;
+            let gstPct = 18; // default
+            if (settings) {
+                if (typeof settings.commission_percentage === 'number') commPct = settings.commission_percentage;
+                if (typeof settings.gst_percentage === 'number') gstPct = settings.gst_percentage;
             }
 
             const amt = Number(normalizedPaymentAmount || normalizedRent || 0);
             const commAmt = Math.round((amt * commPct / 100) * 100) / 100;
-            const ownerAmt = Math.round((amt - commAmt) * 100) / 100;
+            const gstAmt = Math.round((commAmt * gstPct / 100) * 100) / 100;
+            const ownerAmt = Math.round((amt - commAmt - gstAmt) * 100) / 100;
 
             await PaymentTransaction.create({
                 razorpay_payment_id: normalizedPaymentId,
@@ -1550,6 +1553,8 @@ exports.confirmBooking = async (req, res) => {
                 booking_amount: amt,
                 commission_percentage: commPct,
                 commission_amount: commAmt,
+                gst_percentage: gstPct,
+                gst_amount: gstAmt,
                 owner_amount: ownerAmt,
                 payout_status: 'Pending',
                 payment_method: normalizedPaymentMethod,
@@ -2211,13 +2216,16 @@ if (ownerId) {
         try {
             let settings = await SystemSettings.findOne();
             let commPct = 10; // default
-            if (settings && typeof settings.commission_percentage === 'number') {
-                commPct = settings.commission_percentage;
+            let gstPct = 18; // default
+            if (settings) {
+                if (typeof settings.commission_percentage === 'number') commPct = settings.commission_percentage;
+                if (typeof settings.gst_percentage === 'number') gstPct = settings.gst_percentage;
             }
 
             const amt = Number(amount || booking.rent_amount || 0);
             const commAmt = Math.round((amt * commPct / 100) * 100) / 100;
-            const ownerAmt = Math.round((amt - commAmt) * 100) / 100;
+            const gstAmt = Math.round((commAmt * gstPct / 100) * 100) / 100;
+            const ownerAmt = Math.round((amt - commAmt - gstAmt) * 100) / 100;
             const payoutReference = 'RHY-PAY-' + Math.floor(10000000 + Math.random() * 90000000);
 
             // Create Transaction as Paid since we are auto-processing payout
@@ -2235,6 +2243,8 @@ if (ownerId) {
                 booking_amount: amt,
                 commission_percentage: commPct,
                 commission_amount: commAmt,
+                gst_percentage: gstPct,
+                gst_amount: gstAmt,
                 owner_amount: ownerAmt,
                 payout_status: 'Paid',
                 payout_date: new Date(),

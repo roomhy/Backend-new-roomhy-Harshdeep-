@@ -125,6 +125,29 @@ exports.addProperty = async (req, res) => {
     const property = new Property(propertyData);
     await property.save();
 
+    // Notify superadmins if it requires approval
+    if (!isStaff) {
+      try {
+        const User = require('../models/user');
+        const superAdmins = await User.find({ role: 'superadmin' }).lean();
+        for (const sa of superAdmins) {
+          await Notification.create({
+            toRole: 'superadmin',
+            toLoginId: sa.loginId || '',
+            from: req.user?.loginId || 'owner',
+            type: 'new_property_request',
+            message: `New property approval request submitted for "${property.title}"`,
+            meta: {
+              propertyId: property._id.toString(),
+              propertyTitle: property.title
+            }
+          });
+        }
+      } catch (notifyErr) {
+        console.warn('Property request notification failed:', notifyErr.message);
+      }
+    }
+
     // Auto-approve and make live on website
     await syncToApprovedProperty(property);
 
@@ -162,9 +185,21 @@ exports.getAllProperties = async (req, res) => {
         if (req.query.ownerLoginId) {
             filter.ownerLoginId = String(req.query.ownerLoginId).toUpperCase();
         }
+        if (req.query.pendingApproval === 'true') {
+            filter.status = 'pending_approval';
+        }
+        if (req.query.pendingChanges === 'true') {
+            filter['pendingChanges.status'] = 'pending';
+        }
+        if (req.query.assignedTo) {
+            filter.$or = [
+                { 'pendingChanges.assignedTo': req.query.assignedTo },
+                { 'assignedTo': req.query.assignedTo }
+            ];
+        }
         
         const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 10;
+        const limit = req.query.limit ? parseInt(req.query.limit) : 1000;
         const skip = (page - 1) * limit;
         
         // Run counts in parallel
@@ -609,5 +644,35 @@ exports.deleteProperty = async (req, res) => {
     } catch (err) {
         console.error('Delete Property Error:', err);
         res.status(500).json({ success: false, message: 'Failed to delete property', error: err.message });
+    }
+};
+
+// Assign property verification task to employee
+exports.assignPropertyVerification = async (req, res) => {
+    try {
+        const propId = req.params.id;
+        const { employeeId, employeeName } = req.body;
+        const property = await Property.findById(propId);
+        if (!property) {
+            return res.status(404).json({ success: false, message: "Property not found" });
+        }
+        
+        // If it's a new property pending approval (status === 'pending_approval')
+        if (property.status === 'pending_approval') {
+            property.assignedTo = employeeId;
+            property.assignedToName = employeeName;
+        } else if (property.pendingChanges && property.pendingChanges.status === 'pending') {
+            // If it's an edit request
+            property.pendingChanges.assignedTo = employeeId;
+            property.pendingChanges.assignedToName = employeeName;
+        } else {
+            return res.status(400).json({ success: false, message: "Property has no pending creation or edit request to assign" });
+        }
+
+        await property.save();
+        res.json({ success: true, message: `Property verification assigned to ${employeeName}`, property });
+    } catch (err) {
+        console.error("Error assigning property verification:", err);
+        res.status(500).json({ success: false, message: err.message });
     }
 };

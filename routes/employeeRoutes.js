@@ -3,13 +3,12 @@ const router = express.Router();
 const Employee = require('../models/Employee');
 const jwt = require('jsonwebtoken');
 const { protect, authorize, protectPasswordReset } = require('../middleware/authMiddleware');
-const { authLimiter, authIpLimiter } = require('../middleware/security');
 
 /**
  * POST /api/employees/login
  * Staff login — checks loginId + password
  */
-router.post('/login', authIpLimiter, authLimiter, async (req, res) => {
+router.post('/login', async (req, res) => {
     try {
         const { loginId, password } = req.body;
         if (!loginId || !password) return res.status(400).json({ success: false, error: 'loginId and password required' });
@@ -26,7 +25,7 @@ router.post('/login', authIpLimiter, authLimiter, async (req, res) => {
             try {
                 const bcrypt = require('bcryptjs');
                 passwordMatch = await bcrypt.compare(password, emp.password);
-            } catch (_) {}
+            } catch (_) { }
         }
         if (!passwordMatch) return res.status(401).json({ success: false, error: 'Invalid Staff ID or Password' });
 
@@ -75,7 +74,7 @@ router.post('/login', authIpLimiter, authLimiter, async (req, res) => {
  * POST /api/employees/:loginId/reset-password
  * Staff one-time password reset
  */
-router.post('/:loginId/reset-password', authIpLimiter, authLimiter, protectPasswordReset, async (req, res) => {
+router.post('/:loginId/reset-password', protectPasswordReset, async (req, res) => {
     try {
         const { loginId } = req.params;
         const { newPassword } = req.body;
@@ -88,9 +87,6 @@ router.post('/:loginId/reset-password', authIpLimiter, authLimiter, protectPassw
 
         const emp = await Employee.findOne({ loginId });
         if (!emp) return res.status(404).json({ success: false, error: 'Employee not found' });
-        if (emp.requirePasswordReset === false) {
-            return res.status(400).json({ success: false, error: 'Password has already been reset' });
-        }
 
         emp.password = newPassword; // Model may hash on save
         emp.requirePasswordReset = false;
@@ -111,7 +107,7 @@ router.post('/:loginId/reset-password', authIpLimiter, authLimiter, protectPassw
  * Get all employees (with optional filters)
  * Query params: area, role, isActive (true/false)
  */
-router.get('/', protect, authorize('superadmin', 'areamanager', 'owner'), async (req, res) => {
+router.get('/', protect, authorize('superadmin', 'areamanager', 'owner', 'manager', 'employee'), async (req, res) => {
     try {
         const { area, role, isActive } = req.query;
         const filter = { isDeleted: { $ne: true } };
@@ -122,6 +118,9 @@ router.get('/', protect, authorize('superadmin', 'areamanager', 'owner'), async 
         // Areamanager/Owner scope: restrict to employees they manage; ignore any client-supplied parentLoginId
         if (req.user.role === 'areamanager' || req.user.role === 'owner') {
             filter.parentLoginId = String(req.user.loginId || '').toUpperCase();
+        } else if (req.user.role === 'manager' || req.user.role === 'employee') {
+            // Staff proxies fetching their co-workers
+            filter.parentLoginId = String(req.user.parentLoginId || '').toUpperCase();
         } else if (req.query.parentLoginId) {
             filter.parentLoginId = req.query.parentLoginId;
         }
@@ -169,9 +168,17 @@ router.get('/generate-staff-id/:ownerLoginId', protect, authorize('superadmin', 
                 return res.status(403).json({ error: 'Forbidden: You can only generate staff IDs for your own employees' });
             }
         }
+        // To avoid global unique constraint violations on loginId,
+        // we must find the absolute highest STAFFxxxx number across ALL owners globally.
+        const allStaff = await Employee.find({ loginId: /^STAFF\d+$/i }).select('loginId').lean();
+        const nums = allStaff
+            .map(s => parseInt((s.loginId || '').toUpperCase().replace('STAFF', ''), 10))
+            .filter(n => !isNaN(n));
 
-        const staffId = await buildUniqueStaffLoginId(ownerLoginId);
-        return res.status(200).json({ success: true, staffId });
+        const maxNum = nums.length > 0 ? Math.max(...nums) : 0;
+        const nextId = `STAFF${String(maxNum + 1).padStart(4, '0')}`;
+
+        return res.status(200).json({ success: true, staffId: nextId });
     } catch (err) {
         return res.status(500).json({ error: 'Failed to generate staff ID', details: err.message });
     }
@@ -298,13 +305,13 @@ router.post('/', protect, authorize('superadmin', 'areamanager', 'owner'), async
                 const mailer = require('../utils/mailer');
                 let originUrl = req.headers.origin || '';
                 if (!originUrl && req.headers.referer) {
-                    try { originUrl = new URL(req.headers.referer).origin; } catch(e){}
+                    try { originUrl = new URL(req.headers.referer).origin; } catch (e) { }
                 }
                 console.log('📧 Sending staff credentials to', empEmail, '| ID:', empLoginId);
                 const sent = await mailer.sendCredentials(empEmail, empLoginId, empPassword, empRole, originUrl);
                 console.log(sent ? '✅ Staff email sent' : '❌ Staff email failed', empEmail);
                 return { attempted: true, sent };
-            } catch(e) {
+            } catch (e) {
                 console.warn('❌ Mailer error:', e.message);
                 return { attempted: true, sent: false, error: e.message };
             }
@@ -361,7 +368,7 @@ router.post('/', protect, authorize('superadmin', 'areamanager', 'owner'), async
             throw dbErr;
         }
 
-        const emailResult = await sendStaffEmail(email, loginId, password, role);
+        const emailResult = await sendStaffEmail(email, finalLoginId, password, role);
         return res.status(201).json({ success: true, data: employee, email: emailResult });
 
     } catch (err) {

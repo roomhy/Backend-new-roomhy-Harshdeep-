@@ -3,8 +3,8 @@ const MaintenanceTask = require('../models/MaintenanceTask');
 exports.getOwnerTasks = async (req, res) => {
     try {
         const { ownerLoginId } = req.params;
-        const tasks = await MaintenanceTask.find({ 
-            ownerLoginId: { $regex: new RegExp('^' + ownerLoginId + '$', 'i') } 
+        const tasks = await MaintenanceTask.find({
+            ownerLoginId: { $regex: new RegExp('^' + ownerLoginId + '$', 'i') }
         }).sort({ createdAt: -1 });
         res.json({ success: true, tasks });
     } catch (err) {
@@ -15,14 +15,16 @@ exports.getOwnerTasks = async (req, res) => {
 
 exports.createTask = async (req, res) => {
     try {
-        const { ownerLoginId, title, frequency, scheduledDate, staff } = req.body;
+        const { ownerLoginId, title, frequency, scheduledDate, staff, createdByRole, createdById } = req.body;
         const task = new MaintenanceTask({
             ownerLoginId: ownerLoginId ? String(ownerLoginId).toUpperCase() : '',
             title,
             frequency,
             scheduledDate,
             staff,
-            status: 'Scheduled'
+            status: 'Scheduled',
+            createdByRole: createdByRole || 'owner',
+            createdById: createdById || (ownerLoginId ? String(ownerLoginId).toUpperCase() : '')
         });
         await task.save();
         res.status(201).json({ success: true, task });
@@ -53,15 +55,20 @@ exports.updateTaskStatus = async (req, res) => {
 exports.assignStaff = async (req, res) => {
     try {
         const { id } = req.params;
-        const { assignedStaffId, assignedStaffName } = req.body;
+        let { assignedStaffId, assignedStaffName } = req.body;
+
+        // Prevent MongoDB CastError when UI sends empty string to unassign
+        if (assignedStaffId === "" || !assignedStaffId) {
+            assignedStaffId = null;
+        }
+
         const task = await MaintenanceTask.findByIdAndUpdate(
             id,
-            { 
-                $set: { 
-                    assignedStaffId: assignedStaffId, 
+            {
+                $set: {
+                    assignedStaffId: assignedStaffId,
                     assignedStaffName: assignedStaffName,
                     staff: assignedStaffName, // Keep original string field synced
-                    status: 'In Progress',
                     updatedAt: new Date()
                 }
             },

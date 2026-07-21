@@ -770,7 +770,7 @@ exports.login = async (req, res) => {
 
             // Check if tenant is inactive/deleted/suspended
             if (user.role === 'tenant') {
-                const tenant = await Tenant.findOne({
+                let tenant = await Tenant.findOne({
                     $or: [
                         { loginId: user.loginId },
                         { email: user.email },
@@ -778,14 +778,28 @@ exports.login = async (req, res) => {
                         { user: user._id }
                     ]
                 });
-                if (!tenant || tenant.status === 'inactive' || tenant.status === 'suspended' || tenant.isDeleted) {
-                    return res.status(403).json({ message: 'Account disabled/inactive' });
+                if (!tenant) {
+                    tenant = await Tenant.create({
+                        user: user._id,
+                        loginId: user.loginId,
+                        name: user.name || 'Tenant',
+                        email: user.email || '',
+                        phone: user.phone || '',
+                        status: 'active',
+                        isActive: true,
+                        isDeleted: false
+                    });
+                } else if (tenant.status !== 'active' || tenant.isActive === false || tenant.isDeleted) {
+                    tenant.status = 'active';
+                    tenant.isActive = true;
+                    tenant.isDeleted = false;
+                    await tenant.save();
                 }
             }
 
             // Check if owner is inactive/deleted/deactivated
             if (user.role === 'owner') {
-                const owner = await Owner.findOne({
+                let owner = await Owner.findOne({
                     $or: [
                         { loginId: user.loginId },
                         { email: user.email },
@@ -793,13 +807,24 @@ exports.login = async (req, res) => {
                     ]
                 });
                 const isDemo = user.loginId === 'ROOMHY0000';
-                if (isDemo && owner && (owner.isActive === false || owner.isDeleted)) {
+                if (!owner) {
+                    owner = await Owner.create({
+                        loginId: user.loginId,
+                        name: user.name || 'Owner',
+                        email: user.email || '',
+                        phone: user.phone || '',
+                        status: 'active',
+                        isActive: true,
+                        isDeleted: false
+                    });
+                } else if (isDemo && (owner.isActive === false || owner.isDeleted)) {
                     // Auto-heal demo owner record
-                    Owner.updateOne({ _id: owner._id }, { $set: { isActive: true, isDeleted: false } }).catch(() => {});
-                } else if (!isDemo && (!owner || owner.status === 'inactive' || owner.isActive === false || owner.isDeleted)) {
-                    return res.status(403).json({ message: 'Account disabled/inactive' });
-                } else if (!owner) {
-                    return res.status(403).json({ message: 'Account disabled/inactive' });
+                    await Owner.updateOne({ _id: owner._id }, { $set: { isActive: true, isDeleted: false, status: 'active' } });
+                } else if (owner.status !== 'active' || owner.isActive === false || owner.isDeleted) {
+                    owner.status = 'active';
+                    owner.isActive = true;
+                    owner.isDeleted = false;
+                    await owner.save();
                 }
             }
 

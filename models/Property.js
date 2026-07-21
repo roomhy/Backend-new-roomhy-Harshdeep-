@@ -166,8 +166,12 @@ const PropertySchema = new mongoose.Schema({
     requestedAt: { type: Date, default: null },
     requestedBy: { type: String, default: null },   // owner loginId
     reason: { type: String, default: null },
-    status: { type: String, enum: ['pending', 'approved', 'rejected', null], default: null }
+    status: { type: String, enum: ['pending', 'approved', 'rejected', null], default: null },
+    assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    assignedToName: { type: String, default: null }
   },
+  assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  assignedToName: { type: String, default: null },
 
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }

@@ -444,6 +444,47 @@ exports.updateRoom = async (req, res) => {
             delete updateData.electricityUnitCost;
         }
 
+        // Intercept updates if the user role is owner or propertyowner
+        const isOwner = req.user && (req.user.role === 'owner' || req.user.role === 'propertyowner');
+        if (isOwner) {
+            const existingRoom = await Room.findById(roomId);
+            if (!existingRoom) {
+                return res.status(404).json({ success: false, message: "Room not found" });
+            }
+            
+            existingRoom.pendingChanges = {
+                data: updateData,
+                requestedAt: new Date(),
+                requestedBy: req.user.loginId || req.user.name || 'owner',
+                reason: updateData.reason || 'Owner edit request',
+                status: 'pending'
+            };
+            await existingRoom.save();
+
+            // Create superadmin notification
+            try {
+                const superAdmins = await User.find({ role: 'superadmin' }).lean();
+                for (const sa of superAdmins) {
+                    await Notification.create({
+                        toRole: 'superadmin',
+                        toLoginId: sa.loginId || '',
+                        from: req.user.loginId || 'owner',
+                        type: 'room_edit_request',
+                        message: `Room edit request submitted by owner for room "${existingRoom.title}"`,
+                        meta: {
+                            roomId: existingRoom._id.toString(),
+                            roomTitle: existingRoom.title,
+                            propertyId: existingRoom.property.toString()
+                        }
+                    });
+                }
+            } catch (notifyErr) {
+                console.warn('Room edit request notification failed:', notifyErr.message);
+            }
+
+            return res.json({ success: true, message: "Room changes submitted and pending approval", room: existingRoom });
+        }
+
         const room = await Room.findByIdAndUpdate(roomId, { $set: updateData }, { new: true });
         if (!room) {
             return res.status(404).json({ success: false, message: "Room not found" });
@@ -451,6 +492,90 @@ exports.updateRoom = async (req, res) => {
         res.json({ success: true, room });
     } catch (err) {
         console.error("Error updating room:", err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+// Approve pending room changes
+exports.approveRoomChanges = async (req, res) => {
+    try {
+        const { roomId } = req.params;
+        const room = await Room.findById(roomId);
+        if (!room) {
+            return res.status(404).json({ success: false, message: "Room not found" });
+        }
+        if (!room.pendingChanges || room.pendingChanges.status !== 'pending') {
+            return res.status(400).json({ success: false, message: "No pending changes for this room" });
+        }
+
+        // Apply changes
+        const data = room.pendingChanges.data;
+        if (data) {
+            Object.keys(data).forEach(key => {
+                if (key.startsWith('electricity.')) {
+                    const subKey = key.split('.')[1];
+                    if (!room.electricity) room.electricity = {};
+                    room.electricity[subKey] = data[key];
+                } else {
+                    room[key] = data[key];
+                }
+            });
+        }
+
+        room.pendingChanges.status = 'approved';
+        // Clear data but keep record of approval
+        room.pendingChanges.data = null;
+        await room.save();
+
+        res.json({ success: true, message: "Room changes approved and applied successfully", room });
+    } catch (err) {
+        console.error("Error approving room changes:", err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+// Reject pending room changes
+exports.rejectRoomChanges = async (req, res) => {
+    try {
+        const { roomId } = req.params;
+        const room = await Room.findById(roomId);
+        if (!room) {
+            return res.status(404).json({ success: false, message: "Room not found" });
+        }
+        if (!room.pendingChanges || room.pendingChanges.status !== 'pending') {
+            return res.status(400).json({ success: false, message: "No pending changes for this room" });
+        }
+
+        room.pendingChanges.status = 'rejected';
+        await room.save();
+
+        res.json({ success: true, message: "Room changes rejected successfully", room });
+    } catch (err) {
+        console.error("Error rejecting room changes:", err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+// Assign room verification task to employee
+exports.assignRoomVerification = async (req, res) => {
+    try {
+        const { roomId } = req.params;
+        const { employeeId, employeeName } = req.body;
+        const room = await Room.findById(roomId);
+        if (!room) {
+            return res.status(404).json({ success: false, message: "Room not found" });
+        }
+        if (!room.pendingChanges || room.pendingChanges.status !== 'pending') {
+            return res.status(400).json({ success: false, message: "No pending changes for this room to assign" });
+        }
+
+        room.pendingChanges.assignedTo = employeeId;
+        room.pendingChanges.assignedToName = employeeName;
+        await room.save();
+
+        res.json({ success: true, message: `Room verification assigned to ${employeeName}`, room });
+    } catch (err) {
+        console.error("Error assigning room verification:", err);
         res.status(500).json({ success: false, message: err.message });
     }
 };
@@ -489,6 +614,13 @@ exports.getAllRooms = async (req, res) => {
 
         // Build search query (excluding soft-deleted rooms)
         const query = { isDeleted: { $ne: true } };
+
+        if (req.query.pendingChanges === 'true') {
+            query['pendingChanges.status'] = 'pending';
+        }
+        if (req.query.assignedTo) {
+            query['pendingChanges.assignedTo'] = req.query.assignedTo;
+        }
 
         if (propertyFilter && propertyFilter !== 'all') {
             query.property = propertyFilter;

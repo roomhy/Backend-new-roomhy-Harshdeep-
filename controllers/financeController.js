@@ -319,7 +319,11 @@ exports.updatePlatformFees = async (req, res) => {
 exports.getCommissionDetails = async (req, res) => {
   try {
     const settings = await getSettings();
-    res.json({ success: true, commissionPercentage: settings.commission_percentage });
+    res.json({ 
+      success: true, 
+      commissionPercentage: settings.commission_percentage,
+      gstPercentage: settings.gst_percentage !== undefined ? settings.gst_percentage : 18
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -327,11 +331,12 @@ exports.getCommissionDetails = async (req, res) => {
 
 exports.updateCommissionDetails = async (req, res) => {
   try {
-    const { commissionPercentage } = req.body;
+    const { commissionPercentage, gstPercentage } = req.body;
     const settings = await getSettings();
-    settings.commission_percentage = commissionPercentage;
+    if (commissionPercentage !== undefined) settings.commission_percentage = commissionPercentage;
+    if (gstPercentage !== undefined) settings.gst_percentage = gstPercentage;
     await settings.save();
-    res.json({ success: true, message: 'Platform global commission configuration updated' });
+    res.json({ success: true, message: 'Platform global commission and GST configuration updated' });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

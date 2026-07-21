@@ -38,7 +38,6 @@ const rentSchema = new mongoose.Schema({
     razorpayOrderId: String,
     razorpayPaymentId: String,
     razorpaySignature: String,
-    invoiceNumber: { type: String, default: null }, // Sequential GST Invoice Number e.g. RHY-2025-001234
     // Owner payout tracking (platform -> owner transfer)
     ownerPayoutStatus: {
         type: String,
@@ -53,15 +52,21 @@ const rentSchema = new mongoose.Schema({
     // Cash collection workflow
     cashRequestStatus: {
         type: String,
-        enum: ['none', 'requested', 'received', 'otp_sent', 'paid'],
+        enum: ['none', 'requested', 'received', 'otp_sent', 'paid', 'pending_approval', 'owner_approved', 'verified', 'rejected', 'expired'],
         default: 'none'
     },
     cashRequestedAt: Date,
+    cashApprovedAt: Date,
     cashReceivedAt: Date,
-    cashOtpCode: String,
+    cashOtpHash: String,
     cashOtpExpiry: Date,
     cashOtpSentAt: Date,
+    cashOtpVerifiedAt: Date,
+    cashVerifiedBy: String,
+    cashRejectedReason: String,
+    cashRejectedAt: Date,
     cashOtpAttempts: { type: Number, default: 0 },
+    cashOtpMaxAttempts: { type: Number, default: 5 },
     
     // Reminder Tracking
     reminders: [

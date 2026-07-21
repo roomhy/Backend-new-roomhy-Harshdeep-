@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const systemSettingsSchema = new mongoose.Schema({
   commission_percentage: { type: Number, default: 10 },
+  gst_percentage: { type: Number, default: 18 },
   revenueBalance: { type: Number, default: 0 },
   fixedFee: { type: Number, default: 500 },
   perBedFee: { type: Number, default: 50 },

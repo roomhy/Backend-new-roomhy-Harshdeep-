@@ -41,7 +41,16 @@ const RoomSchema = new mongoose.Schema({
 	status: { type: String, enum: ['inactive','active'], default: 'inactive' },
 	isPromoted: { type: Boolean, default: false },
 	isDeleted: { type: Boolean, default: false },
-	createdAt: { type: Date, default: Date.now }
+	createdAt: { type: Date, default: Date.now },
+	pendingChanges: {
+		data: { type: Object, default: null },
+		requestedAt: { type: Date, default: null },
+		requestedBy: { type: String, default: null },
+		reason: { type: String, default: null },
+		status: { type: String, enum: ['pending', 'approved', 'rejected', null], default: null },
+		assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+		assignedToName: { type: String }
+	}
 });
 
 RoomSchema.index({ property: 1, isDeleted: 1 });

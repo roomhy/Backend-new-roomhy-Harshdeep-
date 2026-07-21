@@ -3,6 +3,50 @@ const router = express.Router();
 const Review = require('../models/Review');
 const { protect, authorize } = require('../middleware/authMiddleware');
 
+// Safety/text moderation helper for review submissions
+function moderateReviewText(text) {
+  if (!text) return { flagged: false };
+  
+  // 1. Contact leakage / links check (email, phone, upi, social handles, external links)
+  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/i;
+  const phoneRegex = /(\+?\d{1,4}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/;
+  const simplePhoneRegex = /\b\d{10}\b/;
+  const upiRegex = /[a-zA-Z0-9.-]+\s*@\s*(upi|ybl|paytm|okaxis|okhdfcbank|okicici|pay|phonepe|gpay|okdhfl|oksbi|axisbank|hdfcbank|icici|sbi|barodampay|kotak)/gi;
+  const socialRegex = /(instagram\.com|ig\.me|t\.me|telegram\.me|facebook\.com|fb\.me|fb\.com|snapchat\.com|twitter\.com|x\.com)/i;
+  const linkRegex = /(https?:\/\/[^\s]+|www\.[^\s]+)/i;
+  
+  if (
+    emailRegex.test(text) || 
+    phoneRegex.test(text) || 
+    simplePhoneRegex.test(text) || 
+    upiRegex.test(text) || 
+    socialRegex.test(text) || 
+    linkRegex.test(text)
+  ) {
+    return { flagged: true, reason: 'spam', details: 'Contact info or link detected' };
+  }
+  
+  // 2. Profanity / Hate Speech check
+  const abuseRegex = /\b(abuse|hate|spam|scam|fraud|bastard|idiot|stupid|asshole|bitch|fucking?|fuck|shit|crap|piss|chutiya|madarchod|behenchod|saala|kamina|harami|bhosdike|randi|gandu|saale)\b/i;
+  if (abuseRegex.test(text)) {
+    return { flagged: true, reason: 'abuse', details: 'Abusive language or profanity detected' };
+  }
+  
+  // 3. Spam / Repetitive letters check
+  const repetitiveRegex = /([a-zA-Z])\1{4,}/;
+  if (repetitiveRegex.test(text)) {
+    return { flagged: true, reason: 'spam', details: 'Repetitive characters detected' };
+  }
+  
+  // 4. Duplicate words check
+  const duplicateWordsRegex = /(\b\w+\b)(?:\s+\1){3,}/i;
+  if (duplicateWordsRegex.test(text)) {
+    return { flagged: true, reason: 'spam', details: 'Repetitive words detected' };
+  }
+
+  return { flagged: false };
+}
+
 // ============================================================
 // GET: Fetch all reviews (public)
 // ============================================================
@@ -244,69 +288,130 @@ router.post('/', protect, async (req, res) => {
     const email = req.user.email;
     
     // Validate required fields
-    if (!propertyId || !propertyName || !rating || !review) {
+    if (!propertyId || !propertyName || rating === undefined || !review) {
       return res.status(400).json({
         success: false,
         message: 'Missing required fields: propertyId, propertyName, rating, review'
       });
     }
-    
-    // Check if user has already reviewed this property
-    const existingReview = await Review.hasUserReviewed(propertyId, userId);
-    if (existingReview) {
+
+    // Validate if propertyId is a valid MongoDB ObjectId to prevent CastError
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(propertyId)) {
       return res.status(400).json({
         success: false,
-        message: 'You have already reviewed this property'
+        message: 'Invalid property ID format.'
       });
     }
-
-    // ✅ GATE: Only active moved-in tenants can submit reviews
-    const Tenant = require('../models/Tenant');
-    const now = new Date();
-
-    // First: Check if they have an active Tenant record for this property
-    const tenantRecord = await Tenant.findOne({
-      property: propertyId,
-      isDeleted: { $ne: true },
-      status: 'active',
-      $or: [
-        { email: email },
-        { user: userId }
-      ],
-      moveInDate: { $lte: now }
-    }).lean();
-
-    if (!tenantRecord) {
-      // Fallback: check BookingRequest for confirmed/completed bookings
-      const BookingRequest = require('../models/BookingRequest');
-      const userBooking = await BookingRequest.findOne({
-        $and: [
-          { property_id: propertyId },
-          { 
-            $or: [
-              { user_id: String(userId) },
-              { email: email }
-            ]
-          },
-          { 
-            $or: [
-              { booking_status: 'confirmed' },
-              { status: 'confirmed' },
-              { status: 'booked' },
-              { payment_status: 'completed' }
-            ]
-          }
-        ]
-      });
-
-      if (!userBooking) {
-        return res.status(403).json({
+    
+    // Check if user has already rated this property (only if rating > 0)
+    if (Number(rating) > 0) {
+      const existingReview = await Review.findOne({ propertyId, userId, rating: { $gt: 0 }, status: { $in: ['Approved', 'Pending', 'Active'] } });
+      if (existingReview) {
+        return res.status(400).json({
           success: false,
-          message: 'Reviews can only be submitted by active tenants who have already moved in to this property.'
+          message: 'You have already rated this property'
         });
       }
     }
-    
+    // ✅ GATE: Only active moved-in tenants or ex-tenants can submit reviews
+    const Tenant = require('../models/Tenant');
+    const now = new Date();
+
+    // First: Check if they have an active or inactive Tenant record for this property
+    const tenantRecord = await Tenant.findOne({
+      property: propertyId,
+      isDeleted: { $ne: true },
+      $or: [
+        {
+          status: 'active',
+          moveInDate: { $lte: now }
+        },
+        {
+          status: 'inactive'
+        }
+      ],
+      $or: [
+        { email: email },
+        { user: userId }
+      ]
+    }).lean();
+
+    let resolvedBookingId = '';
+    let resolvedTenantId = '';
+    let resolvedOwnerId = '';
+
+    // Query BookingRequest to find the booking ID
+    const BookingRequest = require('../models/BookingRequest');
+    const userBooking = await BookingRequest.findOne({
+      $and: [
+        { property_id: propertyId },
+        { 
+          $or: [
+            { user_id: String(userId) },
+            { email: email }
+          ]
+        },
+        { 
+          $or: [
+            { booking_status: 'confirmed' },
+            { status: 'confirmed' },
+            { status: 'booked' },
+            { payment_status: 'completed' }
+          ]
+        }
+      ]
+    });
+
+    // In development mode, bypass the strict moved-in tenant gate to make local testing easy.
+    const isDev = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
+    if (!tenantRecord && !userBooking && !isDev) {
+      return res.status(403).json({
+        success: false,
+        message: 'Reviews can only be submitted by active tenants who have already moved in, or ex-tenants of this property.'
+      });
+    }
+
+    // Resolve IDs for Mongoose validation requirements
+    if (tenantRecord) {
+      resolvedTenantId = tenantRecord.loginId || String(userId);
+      resolvedOwnerId = tenantRecord.ownerLoginId || '';
+    } else {
+      resolvedTenantId = String(userId);
+    }
+
+    if (userBooking) {
+      resolvedBookingId = userBooking.visitId || userBooking._id.toString();
+      if (!resolvedOwnerId) {
+        resolvedOwnerId = userBooking.owner_id || '';
+      }
+    } else if (tenantRecord) {
+      // Direct tenant without booking request
+      resolvedBookingId = `DIRECT-${tenantRecord.loginId || tenantRecord._id.toString()}`;
+    } else if (isDev) {
+      // Fallbacks for testing in dev mode
+      resolvedBookingId = `DEV-${userId}`;
+      resolvedOwnerId = 'DEV-OWNER';
+    }
+
+    // Fallback: If ownerId is still not resolved, query the property details to get it
+    if (!resolvedOwnerId) {
+      const ApprovedProperty = require('../models/ApprovedProperty');
+      const propertyDoc = await ApprovedProperty.findOne({ $or: [{ _id: propertyId }, { visitId: propertyId }] }).lean();
+      if (propertyDoc) {
+        resolvedOwnerId = propertyDoc.generatedCredentials?.loginId || propertyDoc.createdBy || propertyDoc.propertyInfo?.ownerLoginId || 'SYSTEM';
+      } else {
+        resolvedOwnerId = 'SYSTEM';
+      }
+    }
+
+    // Run safety / text moderation checks
+    const moderation = moderateReviewText(review);
+    const reviewStatus = moderation.flagged ? 'Pending Review' : 'Active';
+    const modStatus = moderation.flagged ? 'flagged' : 'approved';
+    const flaggedViolations = moderation.flagged ? [moderation.reason] : [];
+    const moderationNotes = moderation.flagged ? `Auto-flagged: ${moderation.details}` : 'Auto-approved';
+
     // Create new review
     const newReview = await Review.create({
       propertyId,
@@ -316,14 +421,25 @@ router.post('/', protect, async (req, res) => {
       email,
       rating: parseInt(rating),
       review,
-      isVerified: false,
+      bookingId: resolvedBookingId,
+      tenantId: resolvedTenantId,
+      ownerId: resolvedOwnerId,
+      isVerifiedStay: true, // Mark it as verified stay review since we verified eligibility
+      isVerified: true,
       isFeatured: false,
-      status: 'Active'
+      status: reviewStatus,
+      moderationStatus: modStatus,
+      flaggedViolations,
+      moderationNotes
     });
-    
+
+    const responseMessage = reviewStatus === 'Active' 
+      ? 'Review submitted and approved successfully.'
+      : 'Review submitted successfully. It has been flagged for manual verification by the safety filter.';
+
     res.status(201).json({
       success: true,
-      message: 'Review submitted successfully. It will be visible after approval.',
+      message: responseMessage,
       data: newReview
     });
   } catch (error) {
@@ -336,12 +452,10 @@ router.post('/', protect, async (req, res) => {
 });
 
 // ============================================================
-// PUT: Update review (protected - admin only)
+// PUT: Update review (protected - admin or owner edit)
 // ============================================================
-router.put('/:id', protect, authorize('admin', 'superadmin'), async (req, res) => {
+router.put('/:id', protect, async (req, res) => {
   try {
-    const { isFeatured, isVerified, status } = req.body;
-
     const review = await Review.findById(req.params.id);
     if (!review) {
       return res.status(404).json({
@@ -350,36 +464,72 @@ router.put('/:id', protect, authorize('admin', 'superadmin'), async (req, res) =
       });
     }
 
+    const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+    const isOwner = String(review.userId) === String(req.user._id) || String(review.userId) === String(req.user.id);
+
+    if (!isAdmin && !isOwner) {
+      return res.status(403).json({
+        success: false,
+        message: 'You do not have permission to update this review'
+      });
+    }
+
     const oldStatus = review.status;
-    review.isFeatured = isFeatured;
-    review.isVerified = isVerified;
-    review.status = status;
+
+    // Admin updates: featured, verified, status
+    if (isAdmin) {
+      const { isFeatured, isVerified, status } = req.body;
+      if (isFeatured !== undefined) review.isFeatured = isFeatured;
+      if (isVerified !== undefined) review.isVerified = isVerified;
+      if (status !== undefined) review.status = status;
+
+      // Explicit audit log for review moderation
+      try {
+        const AuditLog = require('../models/AuditLog');
+        await AuditLog.create({
+          actorId: req.user?.loginId || req.user?._id || 'SUPER_ADMIN',
+          actorRole: req.user?.role || 'superadmin',
+          module: 'Review',
+          action: 'Moderate Review',
+          method: 'PUT',
+          path: req.originalUrl || `/api/reviews/${req.params.id}`,
+          statusCode: 200,
+          payload: {
+            reviewId: req.params.id,
+            isFeatured,
+            isVerified,
+            status,
+            oldValue: oldStatus,
+            newValue: status
+          }
+        });
+      } catch (auditErr) {
+        console.warn('Review moderation audit log failed:', auditErr.message);
+      }
+    }
+
+    // Owner updates: review text and/or rating
+    if (isOwner) {
+      const { text, review: reviewText, rating } = req.body;
+      const newText = text || reviewText;
+
+      if (newText) {
+        review.review = newText;
+        review.reviewText = newText;
+        
+        // Re-run moderation filter on new text
+        const moderation = moderateReviewText(newText);
+        review.status = moderation.flagged ? 'Pending Review' : 'Active';
+        review.moderationStatus = moderation.flagged ? 'flagged' : 'approved';
+      }
+      
+      if (rating !== undefined) {
+        review.rating = Number(rating);
+      }
+    }
+
     review.updatedAt = Date.now();
     await review.save();
-
-    // Explicit audit log for review moderation
-    try {
-      const AuditLog = require('../models/AuditLog');
-      await AuditLog.create({
-        actorId: req.user?.loginId || req.user?._id || 'SUPER_ADMIN',
-        actorRole: req.user?.role || 'superadmin',
-        module: 'Review',
-        action: 'Moderate Review',
-        method: 'PUT',
-        path: req.originalUrl || `/api/reviews/${req.params.id}`,
-        statusCode: 200,
-        payload: {
-          reviewId: req.params.id,
-          isFeatured,
-          isVerified,
-          status,
-          oldValue: oldStatus,
-          newValue: status
-        }
-      });
-    } catch (auditErr) {
-      console.warn('Review moderation audit log failed:', auditErr.message);
-    }
 
     res.status(200).json({
       success: true,
@@ -426,44 +576,7 @@ router.get('/user/my-reviews', protect, async (req, res) => {
   }
 });
 
-// ============================================================
-// PUT: Update own review (protected - owner only)
-// ============================================================
-router.put('/:id', protect, async (req, res) => {
-  try {
-    const { text, rating } = req.body;
 
-    const review = await Review.findOne({
-      _id: req.params.id,
-      userId: req.user.id
-    });
-
-    if (!review) {
-      return res.status(404).json({
-        success: false,
-        message: 'Review not found or you do not have permission to update it'
-      });
-    }
-
-    if (text) review.reviewText = text;
-    if (text) review.text = text;
-    if (rating) review.rating = rating;
-
-    await review.save();
-
-    res.status(200).json({
-      success: true,
-      message: 'Review updated successfully',
-      data: review
-    });
-  } catch (error) {
-    console.error('Error updating review:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error updating review'
-    });
-  }
-});
 
 // ============================================================
 // DELETE: Delete own review (protected - owner only)

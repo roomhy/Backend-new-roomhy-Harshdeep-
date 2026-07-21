@@ -1082,7 +1082,7 @@ router.get('/settings', protect, authorize('superadmin'), async (req, res) => {
 // Update System Settings
 router.post('/settings', protect, authorize('superadmin'), async (req, res) => {
   try {
-    const { commission_percentage, updated_by } = req.body;
+    const { commission_percentage, gst_percentage, updated_by } = req.body;
     
     if (commission_percentage === undefined || isNaN(Number(commission_percentage))) {
       return res.status(400).json({ success: false, message: 'Invalid commission percentage value' });
@@ -1090,11 +1090,15 @@ router.post('/settings', protect, authorize('superadmin'), async (req, res) => {
     
     let settings = await SystemSettings.findOne();
     const oldPercentage = settings ? settings.commission_percentage : 10;
+    const oldGstPercentage = settings ? settings.gst_percentage : 18;
     if (!settings) {
       settings = new SystemSettings();
     }
     
     settings.commission_percentage = Number(commission_percentage);
+    if (gst_percentage !== undefined && !isNaN(Number(gst_percentage))) {
+      settings.gst_percentage = Number(gst_percentage);
+    }
     settings.updated_by = updated_by || 'superadmin';
     await settings.save();
 
@@ -1197,7 +1201,9 @@ router.get('/revenue/stats', protect, authorize('superadmin'), async (req, res) 
     ]);
 
     const payoutsCount = txs.filter(t => t.payout_status === 'Paid').length;
-    const gstCollected = Math.round(commissionEarned * 0.18);
+    const settings = await SystemSettings.findOne();
+    const gstPct = settings && typeof settings.gst_percentage === 'number' ? settings.gst_percentage : 18;
+    const gstCollected = Math.round(commissionEarned * (gstPct / 100));
 
     res.json({
       success: true,
@@ -1227,10 +1233,13 @@ router.get('/revenue/transactions', protect, authorize('superadmin'), async (req
     const txs = await PaymentTransaction.find({}).sort({ payment_date: -1 }).lean();
     const RentInvoice = require('../models/RentInvoice');
     const Rent = require('../models/Rent');
+    const Property = require('../models/Property');
+    const RentPayment = require('../models/RentPayment');
     
     // Fetch all rent records with invoice numbers
     const rents = await Rent.find({ invoiceNumber: { $ne: null } }).select('tenantLoginId collectionMonth invoiceNumber').lean();
-    const rentInvoices = await RentInvoice.find({}).select('invoiceNumber tenantId tenantName billingMonth status rentAmount paidAmount').lean();
+    const rentInvoices = await RentInvoice.find({}).select('invoiceNumber tenantId tenantName tenantEmail tenantPhone billingMonth status rentAmount paidAmount electricityBill totalPenalty minorPenaltyAmount majorPenaltyAmount createdAt').lean();
+    const properties = await Property.find({}).select('pricing.securityDeposit monthlyRent title').lean();
 
     // Build a quick lookup: invoiceNumber by tenantId+month
     const invByTenantMonth = {};
@@ -1239,17 +1248,51 @@ router.get('/revenue/transactions', protect, authorize('superadmin'), async (req
       invByTenantMonth[key] = inv.invoiceNumber;
     });
 
-    // Format Payments table rows
-    const payments = txs.map(t => ({
-      id: t._id,
-      razorpay_payment_id: t.razorpay_payment_id || 'N/A',
-      booking_id: t.booking_id,
-      tenant_name: t.tenant_name || 'N/A',
-      property_name: t.property_name || 'N/A',
-      amount: t.booking_amount,
-      payout_status: t.payout_status,
-      date: t.payment_date ? t.payment_date.toISOString().split('T')[0] : 'N/A',
-      invoice_number: t.invoice_number || null
+    // Format Payments table rows (first-time onboarding payments)
+    const payments = txs.map(t => {
+      const prop = properties.find(p => String(p._id) === String(t.property_id));
+      const securityDeposit = parseFloat(prop?.pricing?.securityDeposit || "0") || 0;
+      const monthlyRent = parseFloat(prop?.monthlyRent || 0) || (t.booking_amount - securityDeposit);
+
+      return {
+        id: t._id,
+        razorpay_payment_id: t.razorpay_payment_id || 'N/A',
+        booking_id: t.booking_id,
+        tenant_name: t.tenant_name || 'N/A',
+        property_name: t.property_name || 'N/A',
+        amount: t.booking_amount,
+        security_deposit: securityDeposit,
+        monthly_rent: Math.max(0, monthlyRent),
+        payout_status: t.payout_status,
+        date: t.payment_date ? t.payment_date.toISOString().split('T')[0] : 'N/A',
+        invoice_number: t.invoice_number || null,
+        commission_percentage: t.commission_percentage,
+        commission_amount: t.commission_amount,
+        gst_percentage: t.gst_percentage,
+        gst_amount: t.gst_amount,
+        owner_amount: t.owner_amount
+      };
+    });
+
+    // Fetch and format RentPayment records (subsequent monthly rent/cash payments)
+    const rentPaymentsDb = await RentPayment.find({})
+      .populate({ path: 'tenantId', select: 'name email phone' })
+      .populate({ path: 'ownerId', select: 'name loginId' })
+      .populate({ path: 'propertyId', select: 'title' })
+      .sort({ paymentDate: -1 })
+      .lean();
+
+    const rentPaymentsFormatted = rentPaymentsDb.map(rp => ({
+      id: rp._id,
+      invoice_id: rp.invoiceId,
+      tenant_name: rp.tenantId?.name || 'N/A',
+      property_name: rp.propertyId?.title || 'N/A',
+      amount: rp.amount,
+      payment_method: rp.paymentMethod || 'cash',
+      transaction_id: rp.transactionId || 'Offline Cash',
+      date: rp.paymentDate ? rp.paymentDate.toISOString().split('T')[0] : 'N/A',
+      owner_name: rp.ownerId?.name || 'N/A',
+      owner_id: rp.ownerId?.loginId || 'N/A',
     }));
 
     // Format Commissions table rows
@@ -1328,7 +1371,11 @@ router.get('/revenue/transactions', protect, authorize('superadmin'), async (req
       amount: inv.rentAmount,
       paid: inv.paidAmount || 0,
       status: inv.status,
-      date: inv.createdAt || null
+      date: inv.createdAt || null,
+      electricityBill: inv.electricityBill || 0,
+      totalPenalty: inv.totalPenalty || 0,
+      minorPenaltyAmount: inv.minorPenaltyAmount || 0,
+      majorPenaltyAmount: inv.majorPenaltyAmount || 0
     }));
 
     res.json({
@@ -1336,7 +1383,8 @@ router.get('/revenue/transactions', protect, authorize('superadmin'), async (req
       payments,
       commissions,
       payouts,
-      invoiceList
+      invoiceList,
+      rentPayments: rentPaymentsFormatted
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -1727,11 +1775,80 @@ router.get('/support/overview', protect, authorize('superadmin'), async (req, re
 });
 
 // GET support tickets
-router.get('/support/tickets', protect, authorize('superadmin'), async (req, res) => {
+router.get('/support/tickets', protect, authorize('superadmin', 'owner'), async (req, res) => {
   try {
     const SupportTicket = require('../models/SupportTicket');
-    const tickets = await SupportTicket.find({}).sort({ created_at: -1 }).lean();
+    let query = {};
+    if (req.user.role === 'owner') {
+      query.raised_by = req.user.loginId || String(req.user._id);
+    }
+    const tickets = await SupportTicket.find(query).sort({ created_at: -1 }).lean();
     res.json({ success: true, tickets });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST support ticket — lets a superadmin or owner register a complaint/ticket directly.
+router.post('/support/tickets', protect, authorize('superadmin', 'owner'), async (req, res) => {
+  try {
+    const SupportTicket = require('../models/SupportTicket');
+    const {
+      ticket_type, raised_by_name, raised_by_role, property_name, booking_id,
+      owner_name, subject, description, priority, assigned_admin, assigned_admin_name
+    } = req.body;
+
+    if (!subject || !description) {
+      return res.status(400).json({ success: false, message: 'Subject and description are required' });
+    }
+
+    const isOwner = req.user?.role === 'owner';
+
+    const ticket = new SupportTicket({
+      ticket_type: ticket_type || (isOwner ? 'Owner Complaint' : 'Other'),
+      raised_by: req.user?.loginId || req.user?._id || 'superadmin',
+      raised_by_name: raised_by_name || req.user?.name || (isOwner ? 'Property Owner' : 'Super Admin'),
+      raised_by_role: raised_by_role || (isOwner ? 'property_owner' : 'system'),
+      property_name: property_name || null,
+      booking_id: booking_id || null,
+      owner_name: owner_name || (isOwner ? req.user?.name : null),
+      subject,
+      description,
+      priority: priority || 'Medium',
+      status: (assigned_admin_name || assigned_admin) ? 'Assigned' : 'Open',
+      assigned_admin: assigned_admin || null,
+      assigned_admin_name: assigned_admin_name || null,
+      assigned_at: (assigned_admin || assigned_admin_name) ? new Date() : null,
+      activity_log: [{
+        action: 'Ticket Created',
+        performed_by: req.user?.loginId || req.user?._id || 'superadmin',
+        performed_by_name: req.user?.name || 'Super Admin',
+        from_status: null,
+        to_status: (assigned_admin || assigned_admin_name) ? 'Assigned' : 'Open',
+        note: isOwner ? 'Registered by property owner' : 'Registered by superadmin',
+        at: new Date()
+      }]
+    });
+
+    await ticket.save();
+
+    try {
+      const AuditLog = require('../models/AuditLog');
+      await AuditLog.create({
+        actorId: req.user?.loginId || req.user?._id || 'superadmin',
+        actorRole: req.user?.role || 'superadmin',
+        module: 'Support',
+        action: 'Register Support Ticket',
+        method: 'POST',
+        path: req.originalUrl || '/api/superadmin/support/tickets',
+        statusCode: 201,
+        payload: { ticketId: ticket._id, subject }
+      });
+    } catch (auditErr) {
+      console.warn('Support ticket create audit log failed:', auditErr.message);
+    }
+
+    res.status(201).json({ success: true, ticket });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -2018,49 +2135,212 @@ router.get('/revenue/stats', protect, authorize('superadmin'), async (req, res) 
   }
 });
 
-// ─── Revenue Transactions (payments / commissions / payouts breakdown) ───────
-router.get('/revenue/transactions', protect, authorize('superadmin'), async (req, res) => {
-  try {
-    const txs = await PaymentTransaction.find({}).sort({ payment_date: -1 }).lean();
-    const payments = txs.map(t => ({
-      razorpay_payment_id: t.razorpay_payment_id || t._id,
-      booking_id: t.booking_id,
-      tenant_name: t.tenant_name,
-      property_name: t.property_name,
-      amount: t.booking_amount || 0,
-      payout_status: t.payout_status || 'Pending',
-      date: t.payment_date ? new Date(t.payment_date).toLocaleDateString('en-IN') : 'N/A'
-    }));
-    const commissions = txs.map(t => ({
-      razorpay_payment_id: t.razorpay_payment_id || t._id,
-      booking_id: t.booking_id,
-      booking_amount: t.booking_amount || 0,
-      commission_percentage: t.commission_percentage || 10,
-      commission_amount: t.commission_amount || 0,
-      owner_amount: t.owner_amount || 0,
-      date: t.payment_date ? new Date(t.payment_date).toLocaleDateString('en-IN') : 'N/A'
-    }));
-    const payouts = txs.filter(t => t.payout_status).map(t => ({
-      razorpay_payment_id: t.razorpay_payment_id || t._id,
-      owner_id: t.owner_id,
-      owner_name: t.owner_name,
-      owner_amount: t.owner_amount || 0,
-      payout_status: t.payout_status || 'Pending',
-      payout_reference: t.payout_reference || t.razorpay_payment_id,
-      payout_date: t.payout_date ? new Date(t.payout_date).toLocaleDateString('en-IN') : 'N/A',
-      date: t.payment_date ? new Date(t.payment_date).toLocaleDateString('en-IN') : 'N/A'
-    }));
-    res.json({ success: true, payments, commissions, payouts });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
 // Get all owners
 router.get('/owners', protect, authorize('superadmin'), async (req, res) => {
   try {
     const owners = await User.find({ role: 'owner' }).select('name phone loginId email');
     res.json({ success: true, data: owners });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─── Database Backup & Recovery Endpoints ────────────────────────────────────
+const fs = require('fs');
+const path = require('path');
+
+// Helper to serialize MongoDB documents, preserving ObjectIds and Dates
+function serializeDoc(obj) {
+  if (obj === null || obj === undefined) return obj;
+  if (obj instanceof mongoose.Types.ObjectId || (obj.constructor && obj.constructor.name === 'ObjectID')) {
+    return { _type: 'ObjectId', value: obj.toString() };
+  }
+  if (obj instanceof Date) {
+    return { _type: 'Date', value: obj.toISOString() };
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(serializeDoc);
+  }
+  if (typeof obj === 'object') {
+    const res = {};
+    for (const key of Object.keys(obj)) {
+      res[key] = serializeDoc(obj[key]);
+    }
+    return res;
+  }
+  return obj;
+}
+
+// Helper to deserialize MongoDB documents back to original types
+function deserializeDoc(obj) {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'object') {
+    if (obj._type === 'ObjectId') {
+      return new mongoose.Types.ObjectId(obj.value);
+    }
+    if (obj._type === 'Date') {
+      return new Date(obj.value);
+    }
+    if (Array.isArray(obj)) {
+      return obj.map(deserializeDoc);
+    }
+    const res = {};
+    for (const key of Object.keys(obj)) {
+      res[key] = deserializeDoc(obj[key]);
+    }
+    return res;
+  }
+  return obj;
+}
+
+// GET: List all backups
+router.get('/backups', protect, authorize('superadmin'), async (req, res) => {
+  try {
+    const backupsDir = path.join(__dirname, '../backups');
+    if (!fs.existsSync(backupsDir)) {
+      fs.mkdirSync(backupsDir, { recursive: true });
+    }
+    const files = fs.readdirSync(backupsDir);
+    const backups = files
+      .filter(f => f.startsWith('backup_') && f.endsWith('.json'))
+      .map(f => {
+        const filepath = path.join(backupsDir, f);
+        const stats = fs.statSync(filepath);
+        return {
+          filename: f,
+          size: stats.size,
+          createdAt: stats.birthtime || stats.mtime
+        };
+      })
+      .sort((a, b) => b.createdAt - a.createdAt);
+      
+    res.json({ success: true, backups });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST: Create database backup
+router.post('/backups/create', protect, authorize('superadmin'), async (req, res) => {
+  try {
+    const backupsDir = path.join(__dirname, '../backups');
+    if (!fs.existsSync(backupsDir)) {
+      fs.mkdirSync(backupsDir, { recursive: true });
+    }
+    
+    const db = mongoose.connection.db;
+    const collections = await db.listCollections().toArray();
+    const backupData = {};
+    
+    for (const collInfo of collections) {
+      const collName = collInfo.name;
+      if (collName.startsWith('system.')) continue;
+      
+      const docs = await db.collection(collName).find({}).toArray();
+      backupData[collName] = serializeDoc(docs);
+    }
+    
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `backup_${timestamp}.json`;
+    const filepath = path.join(backupsDir, filename);
+    
+    fs.writeFileSync(filepath, JSON.stringify(backupData, null, 2), 'utf-8');
+    
+    const stats = fs.statSync(filepath);
+    res.json({
+      success: true,
+      message: 'Backup created successfully',
+      backup: {
+        filename,
+        size: stats.size,
+        createdAt: stats.birthtime || stats.mtime
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST: Restore database from backup
+router.post('/backups/restore', protect, authorize('superadmin'), async (req, res) => {
+  try {
+    const { filename } = req.body;
+    if (!filename) {
+      return res.status(400).json({ success: false, error: 'Filename is required' });
+    }
+    
+    const backupsDir = path.join(__dirname, '../backups');
+    const filepath = path.join(backupsDir, filename);
+    if (!fs.existsSync(filepath)) {
+      return res.status(404).json({ success: false, error: 'Backup file not found' });
+    }
+    
+    const rawData = fs.readFileSync(filepath, 'utf-8');
+    const backupData = JSON.parse(rawData);
+    const db = mongoose.connection.db;
+    
+    // Clear and restore each collection
+    for (const [collName, docs] of Object.entries(backupData)) {
+      // 1. Clear current collection
+      await db.collection(collName).deleteMany({});
+      
+      // 2. Insert restored documents if present
+      if (docs && docs.length > 0) {
+        const parsedDocs = deserializeDoc(docs);
+        await db.collection(collName).insertMany(parsedDocs);
+      }
+    }
+    
+    res.json({ success: true, message: `Database successfully restored from ${filename}` });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// DELETE: Delete a backup file
+router.delete('/backups/:filename', protect, authorize('superadmin'), async (req, res) => {
+  try {
+    const { filename } = req.params;
+    const backupsDir = path.join(__dirname, '../backups');
+    const filepath = path.join(backupsDir, filename);
+    
+    // Safety check to prevent directory traversal
+    const safePath = path.resolve(filepath);
+    const safeBackupsDir = path.resolve(backupsDir);
+    if (!safePath.startsWith(safeBackupsDir)) {
+      return res.status(400).json({ success: false, error: 'Access denied' });
+    }
+    
+    if (!fs.existsSync(filepath)) {
+      return res.status(404).json({ success: false, error: 'Backup file not found' });
+    }
+    
+    fs.unlinkSync(filepath);
+    res.json({ success: true, message: `Backup file ${filename} deleted successfully` });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET: Download a backup file
+router.get('/backups/download/:filename', protect, authorize('superadmin'), async (req, res) => {
+  try {
+    const { filename } = req.params;
+    const backupsDir = path.join(__dirname, '../backups');
+    const filepath = path.join(backupsDir, filename);
+    
+    // Safety check to prevent directory traversal
+    const safePath = path.resolve(filepath);
+    const safeBackupsDir = path.resolve(backupsDir);
+    if (!safePath.startsWith(safeBackupsDir)) {
+      return res.status(400).json({ success: false, error: 'Access denied' });
+    }
+    
+    if (!fs.existsSync(filepath)) {
+      return res.status(404).json({ success: false, error: 'Backup file not found' });
+    }
+    
+    res.download(filepath, filename);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

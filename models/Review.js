@@ -67,10 +67,9 @@ const reviewSchema = new mongoose.Schema({
   // ─── REVIEW CONTENT ──────────────────────────────────────────────────────
   rating: {
     type: Number,
-    required: [true, 'Rating is required'],
-    min: 1,
+    min: 0,
     max: 5,
-    default: 5
+    default: 0
   },
   review: {
     type: String,
@@ -105,11 +104,9 @@ const reviewSchema = new mongoose.Schema({
     default: false
   },
 
-  // ─── MODERATION ──────────────────────────────────────────────────────────
-  // Admin can ONLY: Approve / Reject / Hide — NEVER edit content
   status: {
     type: String,
-    enum: ['Pending', 'Approved', 'Rejected', 'Hidden', 'Active', 'Inactive'],
+    enum: ['Pending', 'Approved', 'Rejected', 'Hidden', 'Active', 'Inactive', 'Pending Review'],
     default: 'Pending'
   },
   moderationStatus: {
@@ -170,21 +167,21 @@ reviewSchema.pre('save', function(next) {
 const PUBLIC_REVIEW_FIELDS = '-email -userId';
 
 reviewSchema.statics.getFeaturedReviews = function(limit = 6) {
-  return this.find({ isFeatured: true, status: 'Approved', isVerifiedStay: true })
+  return this.find({ isFeatured: true, status: { $in: ['Approved', 'Active'] }, isVerifiedStay: true })
     .select(PUBLIC_REVIEW_FIELDS)
     .sort({ createdAt: -1 })
     .limit(limit);
 };
 
 reviewSchema.statics.getRecentReviews = function(limit = 10) {
-  return this.find({ status: 'Approved' })
+  return this.find({ status: { $in: ['Approved', 'Active'] } })
     .select(PUBLIC_REVIEW_FIELDS)
     .sort({ createdAt: -1 })
     .limit(limit);
 };
 
 reviewSchema.statics.getReviewsByRating = function(minRating = 4, limit = 10) {
-  return this.find({ rating: { $gte: minRating }, status: 'Approved' })
+  return this.find({ rating: { $gte: minRating }, status: { $in: ['Approved', 'Active'] } })
     .select(PUBLIC_REVIEW_FIELDS)
     .sort({ rating: -1, createdAt: -1 })
     .limit(limit);
@@ -192,13 +189,13 @@ reviewSchema.statics.getReviewsByRating = function(minRating = 4, limit = 10) {
 
 reviewSchema.statics.getAverageRating = function() {
   return this.aggregate([
-    { $match: { status: 'Approved' } },
+    { $match: { status: { $in: ['Approved', 'Active'] }, rating: { $gt: 0 } } },
     { $group: { _id: null, avgRating: { $avg: '$rating' }, totalReviews: { $sum: 1 } } }
   ]);
 };
 
 reviewSchema.statics.getPropertyReviews = function(propertyId, limit = 50) {
-  return this.find({ propertyId, status: 'Approved' })
+  return this.find({ propertyId, status: { $in: ['Approved', 'Active'] } })
     .select(PUBLIC_REVIEW_FIELDS)
     .sort({ createdAt: -1 })
     .limit(limit);
@@ -206,7 +203,7 @@ reviewSchema.statics.getPropertyReviews = function(propertyId, limit = 50) {
 
 reviewSchema.statics.getPropertyAverageRating = function(propertyId) {
   return this.aggregate([
-    { $match: { propertyId, status: 'Approved' } },
+    { $match: { propertyId, status: { $in: ['Approved', 'Active'] }, rating: { $gt: 0 } } },
     {
       $group: {
         _id: null,
@@ -223,7 +220,7 @@ reviewSchema.statics.getPropertyAverageRating = function(propertyId) {
 };
 
 reviewSchema.statics.hasUserReviewed = function(propertyId, userId) {
-  return this.findOne({ propertyId, userId, status: { $in: ['Approved', 'Pending'] } });
+  return this.findOne({ propertyId, userId, status: { $in: ['Approved', 'Pending', 'Active'] } });
 };
 
 // NEW: Check if tenant is eligible to review (booking confirmed + moved in)

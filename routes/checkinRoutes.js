@@ -1122,8 +1122,12 @@ router.get('/tenant/profile/:loginId', async (req, res) => {
         const normalizedLoginId = String(req.params.loginId || '').toUpperCase();
         if (!normalizedLoginId) return res.status(400).json({ success: false, message: 'Missing loginId' });
 
-        const tenant = await Tenant.findOne({ loginId: normalizedLoginId })
+        const Property = require('../models/Property');
+        const ApprovedProperty = require('../models/ApprovedProperty');
+
+        let tenant = await Tenant.findOne({ loginId: normalizedLoginId })
             .select('-tempPassword')
+            .populate('property', 'title securityDeposit pricing locationCode ownerLoginId')
             .lean();
         if (!tenant) return res.status(404).json({ success: false, message: 'Tenant not found' });
 
@@ -1135,6 +1139,40 @@ router.get('/tenant/profile/:loginId', async (req, res) => {
                     .select('name profile').lean();
                 ownerName = ownerDoc?.name || ownerDoc?.profile?.name || '';
             } catch (_) {}
+        }
+
+        // Resolve property security deposit fallback if tenant's deposit is missing/zero or agreementDetails deposit is missing/zero
+        let propSecurityDeposit = tenant.property?.pricing?.securityDeposit || tenant.property?.securityDeposit || '';
+        if (!propSecurityDeposit && (tenant.propertyTitle || tenant.propertyId)) {
+            try {
+                const p = await Property.findOne({
+                    $or: [
+                        ...(tenant.propertyId ? [{ _id: tenant.propertyId }] : []),
+                        { title: tenant.propertyTitle }
+                    ]
+                }).select('securityDeposit pricing').lean() || await ApprovedProperty.findOne({
+                    $or: [
+                        ...(tenant.propertyId ? [{ propertyId: tenant.propertyId }] : []),
+                        { title: tenant.propertyTitle }
+                    ]
+                }).select('securityDeposit pricing').lean();
+                propSecurityDeposit = p?.pricing?.securityDeposit || p?.securityDeposit || '';
+            } catch (_) {}
+        }
+
+        if (propSecurityDeposit) {
+            const propDepositNum = parseInt(propSecurityDeposit, 10);
+            if (!isNaN(propDepositNum) && propDepositNum > 0) {
+                if (!tenant.securityDepositTotal || tenant.securityDepositTotal === 0) {
+                    tenant.securityDepositTotal = propDepositNum;
+                    tenant.securityDepositBalance = Math.max(0, propDepositNum - (tenant.securityDepositPaid || 0));
+                }
+                tenant.digitalCheckin = tenant.digitalCheckin || {};
+                tenant.digitalCheckin.agreementDetails = tenant.digitalCheckin.agreementDetails || {};
+                if (!tenant.digitalCheckin.agreementDetails.securityDeposit || tenant.digitalCheckin.agreementDetails.securityDeposit === '0') {
+                    tenant.digitalCheckin.agreementDetails.securityDeposit = String(propDepositNum);
+                }
+            }
         }
 
         return res.json({ success: true, tenant: { ...tenant, ownerName } });

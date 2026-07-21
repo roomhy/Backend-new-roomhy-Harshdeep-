@@ -33,7 +33,9 @@ const paymentTransactionSchema = new mongoose.Schema({
   booking_amount:        { type: Number, required: true },   // Full amount paid by tenant
   commission_percentage: { type: Number, required: true },   // e.g. 10 (from Settings at that moment)
   commission_amount:     { type: Number, required: true },   // booking_amount * commission_percentage / 100
-  owner_amount:          { type: Number, required: true },   // booking_amount - commission_amount
+  gst_percentage:        { type: Number, default: 18 },      // e.g. 18 (from Settings at that moment)
+  gst_amount:            { type: Number, default: 0 },       // commission_amount * gst_percentage / 100
+  owner_amount:          { type: Number, required: true },   // booking_amount - commission_amount - gst_amount
 
   // ─── PAYOUT STATUS ────────────────────────────────────────────────────────
   payout_status: {
