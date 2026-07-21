@@ -32,7 +32,7 @@ exports.assignTenant = async (req, res) => {
         let depositTotal = Math.max(0, parseInt(securityDepositTotal, 10) || 0);
         const depositPaid = Math.max(0, parseInt(securityDepositPaid, 10) || 0);
         const explicitDepositBalance = parseInt(securityDepositBalance, 10);
-        const depositBalance = Math.max(0, Number.isFinite(explicitDepositBalance) ? explicitDepositBalance : (depositTotal - depositPaid));
+        let depositBalance = Math.max(0, Number.isFinite(explicitDepositBalance) ? explicitDepositBalance : (depositTotal - depositPaid));
         const electricityChargeAmount = Math.max(0, parseInt(electricityCharge, 10) || 0);
         const maintenanceChargeAmount = Math.max(0, parseInt(maintenanceCharge, 10) || 0);
         // Normalize bedNo: accept "1", 1, "Bed 1", "bed1" → numeric string "1"
@@ -150,7 +150,7 @@ exports.assignTenant = async (req, res) => {
             const propDep = parseInt(property.pricing?.securityDeposit || property.securityDeposit, 10) || 0;
             if (propDep > 0) depositTotal = propDep;
         }
-        const depositBalance = Math.max(0, Number.isFinite(explicitDepositBalance) ? explicitDepositBalance : (depositTotal - depositPaid));
+        depositBalance = Math.max(0, Number.isFinite(explicitDepositBalance) ? explicitDepositBalance : (depositTotal - depositPaid));
 
         // Find Room record if exists
         let roomObj = null;
