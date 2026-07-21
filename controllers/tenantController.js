@@ -235,8 +235,8 @@ exports.assignTenant = async (req, res) => {
             tempPassword, // Store for now; will be displayed once, then forgotten
             user: user._id,
             securityDepositTotal: depositTotal,
-            securityDepositPaid: depositPaid,
-            securityDepositBalance: depositBalance,
+            securityDepositPaid: depositPaid > 0 ? depositPaid : depositTotal,
+            securityDepositBalance: depositPaid > 0 ? Math.max(0, depositTotal - depositPaid) : 0,
             electricityCharge: electricityChargeAmount,
             maintenanceCharge: maintenanceChargeAmount,
             kyc: {
@@ -304,14 +304,15 @@ exports.assignTenant = async (req, res) => {
                 tenantLoginId: loginId,
                 rentAmount: rentAmount,
                 totalDue: rentAmount,
-                paidAmount: 0,
-                paymentStatus: 'pending',
+                paidAmount: rentAmount,
+                paymentStatus: 'paid',
+                paymentDate: new Date(),
                 moveInDate: moveInDate ? new Date(moveInDate) : new Date(),
                 dueDate: moveInDate ? new Date(moveInDate) : new Date(),
                 collectionMonth: collectionMonth,
                 createdAt: new Date()
             });
-            console.log(`[RENT RECORD CREATED] Rent ID: ${rent._id}, Amount: ₹${rentAmount}`);
+            console.log(`[RENT RECORD CREATED] Rent ID: ${rent._id}, Amount: ₹${rentAmount} (Marked PAID on onboarding)`);
         } else {
             console.log(`[RENT ALREADY EXISTS] Skipped duplicate rent generation for ${loginId} in ${collectionMonth}`);
         }
